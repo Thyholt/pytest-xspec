@@ -16,11 +16,14 @@ if TYPE_CHECKING:
     from execnet import Channel
     from xdist.workermanage import WorkerController
 
+COLLECTED_NODEID = pytest.StashKey[str]()
+
 
 class WorkerCollection(TypedDict):
     requirements: dict[str, list[str]]
     deselected: list[str]
     error: str | None
+    nodeids: dict[str, str]
 
 
 class WorkerConfig(Protocol):
@@ -81,10 +84,12 @@ class RequirementPlugin:
         self.completed: set[str] = set()
         self.interrupted = False
         self.collection_error: str | None = None
+        self.collected_nodeids: dict[str, str] = {}
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> Generator[None]:
         for item in items:
+            item.stash[COLLECTED_NODEID] = item.nodeid
             try:
                 identifiers = requirement_ids(item, self.requirements)
             except pytest.UsageError as error:
@@ -105,25 +110,29 @@ class RequirementPlugin:
                 for identifier in self.selected_requirements
                 for nodeid in self.requirements[identifier]
             }
-            deselected = [item for item in items if item.nodeid not in selected_nodeids]
-            items[:] = [item for item in items if item.nodeid in selected_nodeids]
+            deselected = [
+                item for item in items if item.stash[COLLECTED_NODEID] not in selected_nodeids
+            ]
+            items[:] = [item for item in items if item.stash[COLLECTED_NODEID] in selected_nodeids]
             if deselected:
                 self.config.hook.pytest_deselected(items=deselected)
 
     def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
-            if item.nodeid in self.outcomes:
-                self.outcomes[item.nodeid] = "DESELECTED"
+            nodeid = item.stash.get(COLLECTED_NODEID, item.nodeid)
+            if nodeid in self.outcomes:
+                self.outcomes[nodeid] = "DESELECTED"
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
             self.collection_errors.add(report.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        nodeid = self.collected_nodeids.get(report.nodeid, report.nodeid)
         if report.when == "teardown":
-            self.completed.add(report.nodeid)
+            self.completed.add(nodeid)
 
-        if report.nodeid in self.outcomes:
+        if nodeid in self.outcomes:
             outcome = phase_outcome(
                 report.when,
                 report.outcome,
@@ -132,8 +141,8 @@ class RequirementPlugin:
             )
 
             if outcome is not None:
-                previous = self.outcomes[report.nodeid]
-                self.outcomes[report.nodeid] = aggregate(
+                previous = self.outcomes[nodeid]
+                self.outcomes[nodeid] = aggregate(
                     [previous, outcome] if previous is not None else [outcome]
                 )
 
@@ -142,8 +151,15 @@ class RequirementPlugin:
         node.workerinput["xspec_channel"] = node.gateway.newchannel()
 
     @pytest.hookimpl(tryfirst=True)
-    def pytest_collection_finish(self) -> None:
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
         if self.is_worker:
+            # loadgroup appends group names to execution IDs after associations
+            # are collected. Keep the original IDs for selection and reporting.
+            for item in session.items:
+                original = item.stash.get(COLLECTED_NODEID, item.nodeid)
+                if item.nodeid != original:
+                    self.collected_nodeids[item.nodeid] = original
+
             workerinput = cast(WorkerConfig, self.config).workerinput
             channel = cast("Channel", workerinput["xspec_channel"])
             # Send before xdist announces collection completion, so even a crash
@@ -155,6 +171,7 @@ class RequirementPlugin:
                         nodeid for nodeid, status in self.outcomes.items() if status == "DESELECTED"
                     ],
                     "error": self.collection_error,
+                    "nodeids": self.collected_nodeids,
                 }
             )
             channel.close()
@@ -169,6 +186,7 @@ class RequirementPlugin:
             self.interrupted = True
             raise pytest.UsageError(collection["error"])
 
+        self.collected_nodeids.update(collection["nodeids"])
         deselected = set(collection["deselected"])
         for identifier, nodeids in collection["requirements"].items():
             known = set(self.requirements[identifier])

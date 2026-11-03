@@ -9,6 +9,9 @@ from tests.acceptance.scenarios.cli import collection_error
 from tests.acceptance.scenarios.cli.unmarked_outcomes import failed
 from tests.acceptance.scenarios.parallel import (
     crash,
+    each_outcomes,
+    grouped,
+    internal_error,
     interrupted_teardown,
     parameterized,
     setup_crash,
@@ -30,7 +33,9 @@ from tests.acceptance.scenarios.statuses.reported_outcome import (
 from tests.acceptance.types import ReadReport, UserProject
 
 
-@pytest.mark.parametrize("scheduler", ["load", "worksteal"])
+@pytest.mark.parametrize(
+    "scheduler", ["no", "load", "loadscope", "loadfile", "loadgroup", "worksteal", "each"]
+)
 def test_parallel_results_match_serial_results(
     user_project: UserProject, read_report: ReadReport, scheduler: str
 ) -> None:
@@ -39,13 +44,16 @@ def test_parallel_results_match_serial_results(
     serial = project.runpytest_subprocess("-n", "0", "--xspec-strict", "--xspec-json=report.json")
     serial_report = read_report(project)
     (project.path / "report.json").unlink()
-    (project.path / "report-writers.txt").unlink()
     parallel = project.runpytest_subprocess(
-        "-n", "2", f"--dist={scheduler}", "--xspec-strict", "--xspec-json=report.json"
+        "-n",
+        "0" if scheduler == "no" else "2",
+        f"--dist={scheduler}",
+        "--xspec-strict",
+        "--xspec-json=report.json",
     )
 
     assert serial.ret == parallel.ret == pytest.ExitCode.OK
-    parallel.assert_outcomes(passed=2)
+    parallel.assert_outcomes(passed=4 if scheduler == "each" else 2)
     report = read_report(project)
     assert report == serial_report
     for identifier in ("REQ-001", "REQ-002"):
@@ -59,19 +67,18 @@ def test_parallel_results_match_serial_results(
 
     assert report["summary"]["verified"] is True
     assert parallel.stdout.str().count(" xspec ") == 1
-    assert (project.path / "report-writers.txt").read_text(encoding="utf-8") == "controller\n"
 
 
 @pytest.mark.parametrize("scheduler", ["load", "worksteal"])
 @pytest.mark.parametrize(
     ("scenario", "status"),
     [
-        (failed_test, "FAILED"),
-        (setup_error, "ERROR"),
-        (teardown_error_after_pass, "ERROR"),
-        (skipped_test, "SKIPPED"),
-        (expected_failure, "XFAILED"),
-        (unexpected_pass, "XPASSED"),
+        pytest.param(failed_test, "FAILED", id="failed-test"),
+        pytest.param(setup_error, "ERROR", id="setup-error"),
+        pytest.param(teardown_error_after_pass, "ERROR", id="teardown-error"),
+        pytest.param(skipped_test, "SKIPPED", id="skipped-test"),
+        pytest.param(expected_failure, "XFAILED", id="expected-failure"),
+        pytest.param(unexpected_pass, "XPASSED", id="unexpected-pass"),
     ],
 )
 def test_parallel_unsuccessful_tests_remain_unverified(
@@ -332,15 +339,99 @@ def test_all_workers_crashing_before_the_first_report_preserves_collection(
     )
 
     assert result.ret == pytest.ExitCode.TESTS_FAILED
+    crashed_nodeids = [
+        path.read_text(encoding="utf-8") for path in project.path.glob("crashed-*.txt")
+    ]
+    assert len(crashed_nodeids) == 2
+    collected_nodeids = [f"test_behavior.py::test_behavior[{value}]" for value in range(4)]
     report = read_report(project)
     assert expected(report["requirements"]["REQ-001"]).to_have(
         status="ERROR",
         tests=[
-            ("test_behavior.py::test_behavior[0]", "ERROR"),
-            ("test_behavior.py::test_behavior[1]", "SKIPPED"),
-            ("test_behavior.py::test_behavior[2]", "ERROR"),
-            ("test_behavior.py::test_behavior[3]", "SKIPPED"),
+            (nodeid, "ERROR" if nodeid in crashed_nodeids else "SKIPPED")
+            for nodeid in collected_nodeids
         ],
+    )
+    assert report["summary"]["verified"] is False
+
+
+@pytest.mark.parametrize(
+    "selection", [(), ("--xspec-select=REQ-001",)], ids=["all-requirements", "selected-requirement"]
+)
+def test_loadgroup_preserves_requirement_selection_and_parameterized_identities(
+    user_project: UserProject, read_report: ReadReport, selection: tuple[str, ...]
+) -> None:
+    project = user_project(["REQ-001", "REQ-002"], grouped)
+
+    result = project.runpytest_subprocess(
+        "-n",
+        "2",
+        "--dist=loadgroup",
+        "-k",
+        "not excluded",
+        "--xspec-strict",
+        "--xspec-json=report.json",
+        *selection,
+    )
+
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.assert_outcomes(passed=2)
+    report = read_report(project)
+    assert expected(report["requirements"]["REQ-001"]).to_have(
+        status="PASSED",
+        tests=[
+            ("test_behavior.py::test_behavior[first@case]", "PASSED"),
+            ("test_behavior.py::test_behavior[second]", "PASSED"),
+        ],
+    )
+    assert expected(report["requirements"]["REQ-002"]).to_have(
+        status="DESELECTED",
+        tests=[("test_behavior.py::test_excluded", "DESELECTED")],
+    )
+
+
+def test_each_aggregates_different_worker_outcomes_without_duplicate_records(
+    user_project: UserProject, read_report: ReadReport
+) -> None:
+    project = user_project(["REQ-001"], each_outcomes)
+
+    result = project.runpytest_subprocess(
+        "-n",
+        "2",
+        "--dist=each",
+        "--xspec-strict",
+        "--xspec-json=report.json",
+    )
+
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.assert_outcomes(passed=1, skipped=1)
+    report = read_report(project)
+    assert expected(report["requirements"]["REQ-001"]).to_have(
+        status="SKIPPED",
+        tests=[("test_behavior.py::test_behavior", "SKIPPED")],
+    )
+    assert report["summary"]["verified"] is False
+
+
+@pytest.mark.parametrize("workers", ["0", "2"], ids=["serial", "parallel"])
+def test_an_internal_error_invalidates_otherwise_verified_requirements(
+    user_project: UserProject, read_report: ReadReport, workers: str
+) -> None:
+    project = user_project(["REQ-001"], internal_error)
+
+    result = project.runpytest_subprocess(
+        "-n",
+        workers,
+        "--xspec-strict",
+        "--xspec-json=report.json",
+    )
+
+    assert result.ret == pytest.ExitCode.INTERNAL_ERROR
+    assert "Intentional plugin error after execution" in result.stdout.str()
+    report = read_report(project)
+    assert expected(report["requirements"]["REQ-001"]).to_have(
+        status="PASSED",
+        tests=[("test_behavior.py::test_behavior", "PASSED")],
     )
     assert report["summary"]["verified"] is False
 

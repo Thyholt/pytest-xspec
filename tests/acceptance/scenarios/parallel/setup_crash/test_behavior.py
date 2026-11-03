@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
-def crashed() -> None:
+def crashed(request: pytest.FixtureRequest, value: int) -> None:
+    Path(f"crashed-{value}.txt").write_text(request.node.nodeid, encoding="utf-8")
     os._exit(1)
 
 
