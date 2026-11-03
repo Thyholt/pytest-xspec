@@ -119,15 +119,20 @@ collect-only runs and tests left after an early stop. For example, one passed te
 unexecuted test leave their shared requirement `SKIPPED`, even when an unmarked failure
 caused the early stop.
 
+A passing call without a completed teardown is not a completed passing test and remains
+`SKIPPED` unless pytest reports a higher-priority outcome. An xdist crash report has no
+ordinary execution phase and produces `ERROR` for its associated test.
+
 ## Verification verdict and coverage
 
 A requirement is verified only when its status is `PASSED`. Unmarked test outcomes do
 not contribute to requirement statuses. The overall verdict is true only when every
-declared requirement is `PASSED` and there are no collection errors.
+declared requirement is `PASSED`, there are no collection errors, and execution was not
+interrupted by a worker crash, keyboard interrupt or internal error.
 
 Coverage is `PASSED requirements / declared requirements × 100`. Zero declared
 requirements produce zero passed, zero unverified and numeric coverage of 0.0%.
-The verdict is successful in this case when there are no collection errors.
+The verdict is successful in this case when there are no collection errors or interruptions.
 
 Collection errors prevent successful verification even at 100% requirement coverage.
 They are counted separately because an uncollected test cannot always be associated
@@ -135,6 +140,25 @@ with a requirement.
 
 The verdict is independent of pytest's ordinary exit status. A failing unmarked test
 can fail the pytest command even when every requirement is verified.
+
+## Parallel execution
+
+When the user installs pytest-xdist, a single pytest invocation can distribute tests to
+workers using the default load scheduler or `--dist=worksteal`. Pytest-xdist remains optional.
+The controller combines collected associations, deselection and execution reports. Each
+test appears once under each associated requirement, retaining its full parameterized
+node ID and collection order. Existing outcome precedence and strict-mode rules apply.
+
+Collection associations reach the controller before scheduling begins, including tests
+excluded by native filters or requirement selection. Tests left unexecuted after an early
+stop or worker crash remain `SKIPPED`. Repeated reports of the same collection failure
+count once per collected node ID. Collection failures and worker crashes invalidate the
+overall verdict even if every associated test otherwise passed, or the inventory is empty.
+Worker errors that abort collection or execution also prevent successful verification.
+
+Only the controller writes the requested JSON file and terminal requirement summary.
+Workers do not apply strict mode to their partial execution results. Existing pytest error
+exit codes are preserved. Combining results from separate invocations is outside this contract.
 
 ## Command-line behavior
 
@@ -204,6 +228,8 @@ and outcomes, and the verification summary:
 
 `summary.verified` contains the verification verdict defined above. Coverage is a numeric
 percentage. Requirements retain inventory order, and test lists retain collection order.
+Interrupted runs add `summary.interrupted: true` and always have `summary.verified: false`.
+The `interrupted` key is absent from ordinary completed runs.
 
 ### Selection scope
 
@@ -230,6 +256,7 @@ is a boolean. Without requirement selection, the `scope` key is absent.
 The terminal report shows requirement IDs, statuses and associated test counts in inventory
 order, followed by total requirements, passed, unverified and coverage rounded to one
 decimal place. It includes `Collection errors: 1` for a single collection error.
+Interrupted runs include `Execution interrupted`.
 
 With colors enabled, the entire report is green for a successful verification verdict
 and red otherwise, both in report and strict mode. This includes successful zero-requirement
@@ -265,3 +292,4 @@ Contributor commands are maintained in [CONTRIBUTING.md](../CONTRIBUTING.md#chec
 | [Requirement selection and discovery](../tests/acceptance/test_requirement_selection.py) | Exact selection, native filters, shared results, scope and full-inventory verification. |
 | [CLI](../tests/acceptance/test_cli.py) | Plain pytest, strict enforcement, unmarked outcomes and collection errors. |
 | [Reporting](../tests/acceptance/test_reporting.py) | Terminal feedback, JSON records, requirement coverage and verdicts. |
+| [Parallel execution](../tests/acceptance/test_parallel.py) | Real load and worksteal workers, exact identities, outcome precedence, filtering, early stops, crashes and controller-only reporting. |

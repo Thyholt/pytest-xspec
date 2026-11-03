@@ -2,6 +2,7 @@
 
 from collections.abc import Generator, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import pytest
 from _pytest.terminal import TerminalReporter
@@ -9,7 +10,21 @@ from _pytest.terminal import TerminalReporter
 from pytest_xspec.collector import requirement_ids
 from pytest_xspec.config import load_requirements
 from pytest_xspec.outcomes import aggregate, phase_outcome
-from pytest_xspec.reporting import SelectionScope, build_report, write_json, write_terminal
+from pytest_xspec.reporting import Report, SelectionScope, build_report, write_json, write_terminal
+
+if TYPE_CHECKING:
+    from execnet import Channel
+    from xdist.workermanage import WorkerController
+
+
+class WorkerCollection(TypedDict):
+    requirements: dict[str, list[str]]
+    deselected: list[str]
+    error: str | None
+
+
+class WorkerConfig(Protocol):
+    workerinput: dict[str, object]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -61,12 +76,20 @@ class RequirementPlugin:
             }
 
         self.outcomes: dict[str, str | None] = {}
-        self.collection_errors = 0
+        self.collection_errors: set[str] = set()
+        self.is_worker = hasattr(config, "workerinput")
+        self.completed: set[str] = set()
+        self.interrupted = False
+        self.collection_error: str | None = None
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> Generator[None]:
         for item in items:
-            identifiers = requirement_ids(item, self.requirements)
+            try:
+                identifiers = requirement_ids(item, self.requirements)
+            except pytest.UsageError as error:
+                self.collection_error = str(error)
+                raise
 
             if identifiers and item.nodeid not in self.outcomes:
                 self.outcomes[item.nodeid] = None
@@ -94,9 +117,12 @@ class RequirementPlugin:
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
-            self.collection_errors += 1
+            self.collection_errors.add(report.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if report.when == "teardown":
+            self.completed.add(report.nodeid)
+
         if report.nodeid in self.outcomes:
             outcome = phase_outcome(
                 report.when,
@@ -111,10 +137,80 @@ class RequirementPlugin:
                     [previous, outcome] if previous is not None else [outcome]
                 )
 
-    def pytest_sessionfinish(self, session: pytest.Session) -> None:
-        report = build_report(
-            self.requirements, self.outcomes, self.collection_errors, scope=self.scope
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_configure_node(self, node: "WorkerController") -> None:
+        node.workerinput["xspec_channel"] = node.gateway.newchannel()
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_collection_finish(self) -> None:
+        if self.is_worker:
+            workerinput = cast(WorkerConfig, self.config).workerinput
+            channel = cast("Channel", workerinput["xspec_channel"])
+            # Send before xdist announces collection completion, so even a crash
+            # in the first fixture cannot lose collected or deselected identities.
+            channel.send(
+                {
+                    "requirements": self.requirements,
+                    "deselected": [
+                        nodeid for nodeid, status in self.outcomes.items() if status == "DESELECTED"
+                    ],
+                    "error": self.collection_error,
+                }
+            )
+            channel.close()
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_xdist_node_collection_finished(self, node: "WorkerController") -> None:
+        channel = cast("Channel", node.workerinput["xspec_channel"])
+        # The collection event follows the payload. Receive on the controller
+        # thread so merging cannot race with another worker or a test report.
+        collection = cast(WorkerCollection, channel.receive())
+        if collection["error"] is not None:
+            self.interrupted = True
+            raise pytest.UsageError(collection["error"])
+
+        deselected = set(collection["deselected"])
+        for identifier, nodeids in collection["requirements"].items():
+            known = set(self.requirements[identifier])
+            self.requirements[identifier].extend(
+                nodeid for nodeid in nodeids if nodeid not in known
+            )
+            for nodeid in nodeids:
+                self.outcomes.setdefault(nodeid, "DESELECTED" if nodeid in deselected else None)
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node: "WorkerController", error: object | None) -> None:
+        if error is not None or node.workeroutput["exitstatus"] in (
+            pytest.ExitCode.INTERRUPTED,
+            pytest.ExitCode.INTERNAL_ERROR,
+            pytest.ExitCode.USAGE_ERROR,
+        ):
+            self.interrupted = True
+
+    def pytest_internalerror(self) -> None:
+        self.interrupted = True
+
+    def pytest_keyboard_interrupt(self) -> None:
+        self.interrupted = True
+
+    def report(self) -> Report:
+        outcomes = {
+            nodeid: "SKIPPED" if status == "PASSED" and nodeid not in self.completed else status
+            for nodeid, status in self.outcomes.items()
+        }
+        return build_report(
+            self.requirements,
+            outcomes,
+            len(self.collection_errors),
+            scope=self.scope,
+            interrupted=self.interrupted,
         )
+
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        if self.is_worker:
+            return
+
+        report = self.report()
 
         path = self.config.getoption("xspec_json")
         if path:
@@ -128,10 +224,7 @@ class RequirementPlugin:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
-        if self.config.getoption("xspec_report") or self.config.getoption("xspec_strict"):
-            write_terminal(
-                build_report(
-                    self.requirements, self.outcomes, self.collection_errors, scope=self.scope
-                ),
-                terminalreporter,
-            )
+        if not self.is_worker and (
+            self.config.getoption("xspec_report") or self.config.getoption("xspec_strict")
+        ):
+            write_terminal(self.report(), terminalreporter)

@@ -95,6 +95,25 @@ The first report shows the example above; the second shows a specification witho
 
 ![Terminal reports showing verified specifications in green and a missing specification in red.](https://raw.githubusercontent.com/Thyholt/pytest-xspec/master/docs/images/terminal-reports.png)
 
+### Run tests in parallel
+
+Install `pytest-xdist` alongside `pytest-xspec` to distribute tests across workers:
+
+```sh
+pip install pytest-xdist
+pytest -n 2 --xspec-strict --xspec-json=report.json
+```
+
+The controller combines worker results and writes one report for the invocation.
+Parameterized cases retain their full test IDs, and shared specifications retain every
+associated test. Both the default load scheduler and `--dist=worksteal` are supported.
+The same status and strict mode rules apply, including excluded and unexecuted tests.
+A worker crash or interrupted execution prevents successful verification, even when
+all specification tests passed before the interruption. JSON adds `summary.interrupted`
+with the value `true` in this case, and the terminal reports `Execution interrupted`.
+
+Ordinary pytest runs do not require `pytest-xdist`. Reports cover one pytest invocation.
+
 ### Select specifications
 
 Use `--xspec-select=ID` to run tests linked to one specification. Repeat the option
