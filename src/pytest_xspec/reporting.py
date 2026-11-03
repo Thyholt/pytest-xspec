@@ -21,7 +21,11 @@ class RequirementResult(TypedDict):
     tests: list[TestResult]
 
 
-class Summary(TypedDict):
+class _OptionalInterruption(TypedDict, total=False):
+    interrupted: bool
+
+
+class Summary(_OptionalInterruption):
     requirements: int
     passed: int
     unverified: int
@@ -53,6 +57,7 @@ def build_report(
     collection_errors: int,
     *,
     scope: SelectionScope | None = None,
+    interrupted: bool = False,
 ) -> Report:
     results: dict[str, RequirementResult] = {}
 
@@ -75,10 +80,13 @@ def build_report(
             "passed": passed,
             "unverified": count - passed,
             "coverage": passed / count * 100 if count else 0.0,
-            "verified": passed == count and collection_errors == 0,
+            "verified": passed == count and collection_errors == 0 and not interrupted,
             "collection_errors": collection_errors,
         },
     }
+
+    if interrupted:
+        report["summary"]["interrupted"] = True
 
     if scope is not None:
         report["scope"] = scope
@@ -134,3 +142,6 @@ def write_terminal(report: Report, terminal: TerminalReporter) -> None:
         terminal.write_line(
             f"Collection errors: {report['summary']['collection_errors']}", red=red, green=not red
         )
+
+    if report["summary"].get("interrupted"):
+        terminal.write_line("Execution interrupted", red=True)
