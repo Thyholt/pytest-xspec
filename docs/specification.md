@@ -144,10 +144,13 @@ can fail the pytest command even when every requirement is verified.
 ## Parallel execution
 
 When the user installs pytest-xdist, a single pytest invocation can distribute tests to
-workers using the default load scheduler or `--dist=worksteal`. Pytest-xdist remains optional.
+workers using `load`, `loadscope`, `loadfile`, `loadgroup`, `worksteal` or `each`.
+`--dist=no` keeps normal serial execution. Pytest-xdist remains optional.
 The controller combines collected associations, deselection and execution reports. Each
 test appears once under each associated requirement, retaining its full parameterized
-node ID and collection order. Existing outcome precedence and strict-mode rules apply.
+node ID and collection order. Group suffixes added by `loadgroup` do not change those
+identities or requirement selection. With `each`, outcomes from every worker aggregate
+into one record per test using the existing outcome precedence. Strict-mode rules apply.
 
 Collection associations reach the controller before scheduling begins, including tests
 excluded by native filters or requirement selection. Tests left unexecuted after an early
