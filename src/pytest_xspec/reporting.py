@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
@@ -51,13 +52,18 @@ class Report(_OptionalScope):
     summary: Summary
 
 
+@dataclass
+class ExecutionStatus:
+    collection_errors: set[str] = field(default_factory=set)
+    interrupted: bool = False
+
+
 def build_report(
     requirements: Mapping[str, Sequence[str]],
     outcomes: Mapping[str, str | None],
-    collection_errors: int,
+    execution: ExecutionStatus,
     *,
     scope: SelectionScope | None = None,
-    interrupted: bool = False,
 ) -> Report:
     results: dict[str, RequirementResult] = {}
 
@@ -70,28 +76,34 @@ def build_report(
             "tests": tests,
         }
 
-    count = len(results)
-    passed = sum(result["status"] == "PASSED" for result in results.values())
-
     report: Report = {
         "requirements": results,
-        "summary": {
-            "requirements": count,
-            "passed": passed,
-            "unverified": count - passed,
-            "coverage": passed / count * 100 if count else 0.0,
-            "verified": passed == count and collection_errors == 0 and not interrupted,
-            "collection_errors": collection_errors,
-        },
+        "summary": _build_summary(results, execution),
     }
-
-    if interrupted:
-        report["summary"]["interrupted"] = True
 
     if scope is not None:
         report["scope"] = scope
 
     return report
+
+
+def _build_summary(results: Mapping[str, RequirementResult], execution: ExecutionStatus) -> Summary:
+    count = len(results)
+    passed = sum(result["status"] == "PASSED" for result in results.values())
+    summary: Summary = {
+        "requirements": count,
+        "passed": passed,
+        "unverified": count - passed,
+        "coverage": passed / count * 100 if count else 0.0,
+        "verified": passed == count
+        and not execution.collection_errors
+        and not execution.interrupted,
+        "collection_errors": len(execution.collection_errors),
+    }
+    if execution.interrupted:
+        summary["interrupted"] = True
+
+    return summary
 
 
 def write_json(report: Report, path: Path) -> None:
@@ -106,42 +118,54 @@ def write_terminal(report: Report, terminal: TerminalReporter) -> None:
     terminal.write_sep("=", "xspec", red=red, green=not red)
 
     if "scope" in report:
-        scope = report["scope"]
-        for label, value in (
-            (
-                "Selected requirements",
-                json.dumps(scope["selected_requirements"], ensure_ascii=False),
-            ),
-            ("Collection paths", json.dumps(scope["collection_paths"], ensure_ascii=False)),
-            ("Keyword filter", scope["keyword_expression"] or "(none)"),
-            ("Marker filter", scope["marker_expression"] or "(none)"),
-            ("Discovery only", "yes" if scope["collect_only"] else "no"),
-        ):
-            terminal.write_line(f"{label}: {value}", red=red, green=not red)
+        _write_scope(report["scope"], terminal, red=red)
 
-    width = max([len("Requirement"), *(len(identifier) for identifier in report["requirements"])])
+    _write_requirements(report["requirements"], terminal, red=red)
+    _write_summary(report["summary"], terminal, red=red)
+
+
+def _write_scope(scope: SelectionScope, terminal: TerminalReporter, *, red: bool) -> None:
+    for label, value in (
+        (
+            "Selected requirements",
+            json.dumps(scope["selected_requirements"], ensure_ascii=False),
+        ),
+        ("Collection paths", json.dumps(scope["collection_paths"], ensure_ascii=False)),
+        ("Keyword filter", scope["keyword_expression"] or "(none)"),
+        ("Marker filter", scope["marker_expression"] or "(none)"),
+        ("Discovery only", "yes" if scope["collect_only"] else "no"),
+    ):
+        terminal.write_line(f"{label}: {value}", red=red, green=not red)
+
+
+def _write_requirements(
+    requirements: Mapping[str, RequirementResult], terminal: TerminalReporter, *, red: bool
+) -> None:
+    width = max([len("Requirement"), *(len(identifier) for identifier in requirements)])
     terminal.write_line(f"{'Requirement':<{width}}  {'Status':<10}  Tests", red=red, green=not red)
 
-    for identifier, result in report["requirements"].items():
+    for identifier, result in requirements.items():
         terminal.write_line(
             f"{identifier:<{width}}  {result['status']:<10}  {len(result['tests'])}",
             red=red,
             green=not red,
         )
 
-    for label, field in (
+
+def _write_summary(summary: Summary, terminal: TerminalReporter, *, red: bool) -> None:
+    for label, key in (
         ("Requirements", "requirements"),
         ("Passed", "passed"),
         ("Unverified", "unverified"),
     ):
-        terminal.write_line(f"{label}: {report['summary'][field]}", red=red, green=not red)
+        terminal.write_line(f"{label}: {summary[key]}", red=red, green=not red)
 
-    terminal.write_line(f"Coverage: {report['summary']['coverage']:.1f}%", red=red, green=not red)
+    terminal.write_line(f"Coverage: {summary['coverage']:.1f}%", red=red, green=not red)
 
-    if report["summary"]["collection_errors"]:
+    if summary["collection_errors"]:
         terminal.write_line(
-            f"Collection errors: {report['summary']['collection_errors']}", red=red, green=not red
+            f"Collection errors: {summary['collection_errors']}", red=red, green=not red
         )
 
-    if report["summary"].get("interrupted"):
+    if summary.get("interrupted"):
         terminal.write_line("Execution interrupted", red=True)
