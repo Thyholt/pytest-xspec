@@ -13,25 +13,26 @@ PRECEDENCE = {
 def phase_outcome(
     when: str | None, outcome: str, *, wasxfail: bool = False, longrepr: object = None
 ) -> str | None:
-    if wasxfail and outcome == "skipped":
-        return "XFAILED"
-
     if outcome == "failed":
-        if when != "call":
-            return "ERROR"
-
-        if isinstance(longrepr, str) and longrepr.startswith("[XPASS(strict)] "):
-            return "XPASSED"
-
-        return "FAILED"
+        return _failure_outcome(when, longrepr)
 
     if outcome == "skipped":
-        return "SKIPPED"
+        return "XFAILED" if wasxfail else "SKIPPED"
 
     if when == "call":
         return "XPASSED" if wasxfail else "PASSED"
 
     return None
+
+
+def _failure_outcome(when: str | None, longrepr: object) -> str:
+    if when != "call":
+        return "ERROR"
+
+    if isinstance(longrepr, str) and longrepr.startswith("[XPASS(strict)] "):
+        return "XPASSED"
+
+    return "FAILED"
 
 
 def aggregate(outcomes: Iterable[str]) -> str:
