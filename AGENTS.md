@@ -328,6 +328,8 @@ underlying issue goes away (model upgrades, refactors, process changes).
 - Create commits only when the user explicitly requests a commit. Approval to implement changes
   does not authorize committing them.
 - Keep pull request descriptions short, covering the change and essential validation.
+- Fix required code-health findings before resolving their threads; a rationale alone does not
+  clear a failed quality gate. Leave disputed findings open for the maintainer's decision.
 - Update verified acceptance checkboxes before closing issues, and record agreed scope changes
   explicitly instead of marking superseded criteria as implemented.
 - Keep `tasks/plan.md` and `tasks/todo.md` local and out of commits.
