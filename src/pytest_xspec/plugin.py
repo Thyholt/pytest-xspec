@@ -109,11 +109,12 @@ class RequirementPlugin:
         for item in items:
             item.stash[COLLECTED_NODEID] = item.nodeid
             identifiers = requirement_ids(item, self.requirements)
-            if identifiers and item.nodeid not in self.outcomes:
-                self.outcomes[item.nodeid] = None
+            if not identifiers or item.nodeid in self.outcomes:
+                continue
 
-                for identifier in identifiers:
-                    self.requirements[identifier].append(item.nodeid)
+            self.outcomes[item.nodeid] = None
+            for identifier in identifiers:
+                self.requirements[identifier].append(item.nodeid)
 
     def _select_requirements(self, items: list[pytest.Item]) -> None:
         selected_nodeids = {
@@ -143,19 +144,22 @@ class RequirementPlugin:
         if report.when == "teardown":
             self.completed.add(nodeid)
 
-        if nodeid in self.outcomes:
-            outcome = phase_outcome(
-                report.when,
-                report.outcome,
-                wasxfail=hasattr(report, "wasxfail"),
-                longrepr=report.longrepr,
-            )
+        if nodeid not in self.outcomes:
+            return
 
-            if outcome is not None:
-                previous = self.outcomes[nodeid]
-                self.outcomes[nodeid] = aggregate(
-                    [previous, outcome] if previous is not None else [outcome]
-                )
+        outcome = phase_outcome(
+            report.when,
+            report.outcome,
+            wasxfail=hasattr(report, "wasxfail"),
+            longrepr=report.longrepr,
+        )
+        if outcome is None:
+            return
+
+        previous = self.outcomes[nodeid]
+        self.outcomes[nodeid] = aggregate(
+            [previous, outcome] if previous is not None else [outcome]
+        )
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_configure_node(self, node: "WorkerController") -> None:
@@ -163,29 +167,31 @@ class RequirementPlugin:
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_collection_finish(self, session: pytest.Session) -> None:
-        if self.is_worker:
-            # loadgroup appends group names to execution IDs after associations
-            # are collected. Keep the original IDs for selection and reporting.
-            for item in session.items:
-                original = item.stash.get(COLLECTED_NODEID, item.nodeid)
-                if item.nodeid != original:
-                    self.collected_nodeids[item.nodeid] = original
+        if not self.is_worker:
+            return
 
-            workerinput = cast(WorkerConfig, self.config).workerinput
-            channel = cast("Channel", workerinput["xspec_channel"])
-            # Send before xdist announces collection completion, so even a crash
-            # in the first fixture cannot lose collected or deselected identities.
-            channel.send(
-                {
-                    "requirements": self.requirements,
-                    "deselected": [
-                        nodeid for nodeid, status in self.outcomes.items() if status == "DESELECTED"
-                    ],
-                    "error": self.collection_error,
-                    "nodeids": self.collected_nodeids,
-                }
-            )
-            channel.close()
+        # loadgroup appends group names to execution IDs after associations
+        # are collected. Keep the original IDs for selection and reporting.
+        for item in session.items:
+            original = item.stash.get(COLLECTED_NODEID, item.nodeid)
+            if item.nodeid != original:
+                self.collected_nodeids[item.nodeid] = original
+
+        workerinput = cast(WorkerConfig, self.config).workerinput
+        channel = cast("Channel", workerinput["xspec_channel"])
+        # Send before xdist announces collection completion, so even a crash
+        # in the first fixture cannot lose collected or deselected identities.
+        channel.send(
+            {
+                "requirements": self.requirements,
+                "deselected": [
+                    nodeid for nodeid, status in self.outcomes.items() if status == "DESELECTED"
+                ],
+                "error": self.collection_error,
+                "nodeids": self.collected_nodeids,
+            }
+        )
+        channel.close()
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_xdist_node_collection_finished(self, node: "WorkerController") -> None:
@@ -244,11 +250,10 @@ class RequirementPlugin:
         if path:
             write_json(report, Path(path))
 
-        if (
-            self.config.getoption("xspec_strict")
-            and not report["summary"]["verified"]
-            and session.exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED)
-        ):
+        if not self.config.getoption("xspec_strict") or report["summary"]["verified"]:
+            return
+
+        if session.exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED):
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
