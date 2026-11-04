@@ -1,4 +1,4 @@
-"""Only the controller may publish the invocation's report and strict verdict."""
+"""Collection snapshots and report publication preserve their ownership boundaries."""
 
 from pathlib import Path
 
@@ -46,3 +46,29 @@ def test_only_the_controller_publishes_reports_and_applies_strict_mode(
     assert request.session.exitstatus == (
         pytest.ExitCode.OK if worker else pytest.ExitCode.TESTS_FAILED
     )
+
+
+def test_changing_a_snapshot_does_not_change_collected_requirements(
+    pytestconfig: pytest.Config,
+) -> None:
+    results = plugin.RequirementPlugin(pytestconfig)
+    results.requirements = {"REQ-001": ["test_first"]}
+    snapshot = results.collection_snapshot()
+
+    snapshot["requirements"]["REQ-001"].append("test_second")
+    snapshot["requirements"]["REQ-002"] = ["test_third"]
+
+    assert results.requirements == {"REQ-001": ["test_first"]}
+
+
+def test_later_collection_does_not_change_an_existing_snapshot(
+    pytestconfig: pytest.Config,
+) -> None:
+    results = plugin.RequirementPlugin(pytestconfig)
+    results.requirements = {"REQ-001": ["test_first"]}
+    snapshot = results.collection_snapshot()
+
+    results.requirements["REQ-001"].append("test_second")
+    results.requirements["REQ-002"] = ["test_third"]
+
+    assert snapshot["requirements"] == {"REQ-001": ["test_first"]}

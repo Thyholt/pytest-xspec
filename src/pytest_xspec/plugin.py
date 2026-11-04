@@ -135,7 +135,9 @@ class RequirementPlugin:
 
     def collection_snapshot(self) -> CollectionSnapshot:
         return {
-            "requirements": self.requirements,
+            "requirements": {
+                identifier: list(nodeids) for identifier, nodeids in self.requirements.items()
+            },
             "deselected": self.results.deselected,
             "error": self.collection_error,
         }
