@@ -236,18 +236,12 @@ pip install pytest-xdist
 pytest -n 2 --xspec-strict --xspec-json=report.json
 ```
 
-The controller combines worker results and writes one report for the invocation.
-Parameterized cases retain their full test IDs, and shared specifications retain every
-associated test. All built-in distribution modes are supported: `load`, `loadscope`,
-`loadfile`, `loadgroup`, `worksteal`, `each` and `no`. With `--dist=each`, outcomes
-from every worker contribute to one result per test. Grouped tests retain their original
-IDs, without scheduler group suffixes.
-The same status and strict mode rules apply, including excluded and unexecuted tests.
-A worker crash or interrupted execution prevents successful verification, even when
-all specification tests passed before the interruption. JSON adds `summary.interrupted`
-with the value `true` in this case, and the terminal reports `Execution interrupted`.
+Parallel runs produce one combined report and use the same verification rules as serial
+runs. Every test associated with a specification must pass. If the same test runs on
+multiple workers, a pass on one worker cannot cancel a failure or skip on another.
 
-Ordinary pytest runs do not require `pytest-xdist`. Reports cover one pytest invocation.
+A worker crash or interrupted run prevents overall verification, even if all reported
+tests passed. `pytest-xdist` is optional and is only needed for parallel execution.
 
 ## Retry failed tests
 
