@@ -13,6 +13,9 @@ PRECEDENCE = {
 def phase_outcome(
     when: str | None, outcome: str, *, wasxfail: bool = False, longrepr: object = None
 ) -> str | None:
+    if outcome == "rerun":
+        return "RERUN"
+
     if outcome == "failed":
         return _failure_outcome(when, longrepr)
 

@@ -51,7 +51,7 @@ jobs:
       - name: Install the built wheel
         run: >-
           uv pip install --python /tmp/pypi-release-check/bin/python
-          dist/*.whl 'pytest-xdist>=3.8.0'
+          dist/*.whl 'pytest-xdist>=3.8.0' 'pytest-rerunfailures>=16.7'
 
       - name: Verify the installed package
         working-directory: /tmp

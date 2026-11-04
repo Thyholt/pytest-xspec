@@ -9,7 +9,8 @@ from _pytest.terminal import TerminalReporter
 
 from pytest_xspec.collector import requirement_ids
 from pytest_xspec.config import load_requirements
-from pytest_xspec.outcomes import aggregate, phase_outcome
+from pytest_xspec.execution import ExecutionResults
+from pytest_xspec.outcomes import phase_outcome
 from pytest_xspec.reporting import (
     ExecutionStatus,
     Report,
@@ -85,10 +86,9 @@ class RequirementPlugin:
                 "collect_only": config.getoption("collectonly"),
             }
 
-        self.outcomes: dict[str, str | None] = {}
+        self.results = ExecutionResults()
         self.execution = ExecutionStatus()
         self.is_worker = hasattr(config, "workerinput")
-        self.completed: set[str] = set()
         self.collection_error: str | None = None
         self.collected_nodeids: dict[str, str] = {}
 
@@ -109,10 +109,9 @@ class RequirementPlugin:
         for item in items:
             item.stash[COLLECTED_NODEID] = item.nodeid
             identifiers = requirement_ids(item, self.requirements)
-            if not identifiers or item.nodeid in self.outcomes:
+            if not identifiers or not self.results.collect(item.nodeid):
                 continue
 
-            self.outcomes[item.nodeid] = None
             for identifier in identifiers:
                 self.requirements[identifier].append(item.nodeid)
 
@@ -132,8 +131,7 @@ class RequirementPlugin:
     def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
             nodeid = item.stash.get(COLLECTED_NODEID, item.nodeid)
-            if nodeid in self.outcomes:
-                self.outcomes[nodeid] = "DESELECTED"
+            self.results.deselect(nodeid)
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
@@ -141,25 +139,13 @@ class RequirementPlugin:
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         nodeid = self.collected_nodeids.get(report.nodeid, report.nodeid)
-        if report.when == "teardown":
-            self.completed.add(nodeid)
-
-        if nodeid not in self.outcomes:
-            return
-
         outcome = phase_outcome(
             report.when,
             report.outcome,
             wasxfail=hasattr(report, "wasxfail"),
             longrepr=report.longrepr,
         )
-        if outcome is None:
-            return
-
-        previous = self.outcomes[nodeid]
-        self.outcomes[nodeid] = aggregate(
-            [previous, outcome] if previous is not None else [outcome]
-        )
+        self.results.record(nodeid, report.when, outcome, worker=getattr(report, "node", None))
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_configure_node(self, node: "WorkerController") -> None:
@@ -184,9 +170,7 @@ class RequirementPlugin:
         channel.send(
             {
                 "requirements": self.requirements,
-                "deselected": [
-                    nodeid for nodeid, status in self.outcomes.items() if status == "DESELECTED"
-                ],
+                "deselected": self.results.deselected,
                 "error": self.collection_error,
                 "nodeids": self.collected_nodeids,
             }
@@ -211,7 +195,9 @@ class RequirementPlugin:
                 nodeid for nodeid in nodeids if nodeid not in known
             )
             for nodeid in nodeids:
-                self.outcomes.setdefault(nodeid, "DESELECTED" if nodeid in deselected else None)
+                self.results.collect(nodeid)
+                if nodeid in deselected:
+                    self.results.deselect(nodeid)
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodedown(self, node: "WorkerController", error: object | None) -> None:
@@ -229,13 +215,9 @@ class RequirementPlugin:
         self.execution.interrupted = True
 
     def report(self) -> Report:
-        outcomes = {
-            nodeid: "SKIPPED" if status == "PASSED" and nodeid not in self.completed else status
-            for nodeid, status in self.outcomes.items()
-        }
         return build_report(
             self.requirements,
-            outcomes,
+            self.results.outcomes(),
             self.execution,
             scope=self.scope,
         )

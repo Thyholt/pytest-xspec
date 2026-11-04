@@ -123,6 +123,48 @@ A passing call without a completed teardown is not a completed passing test and 
 `SKIPPED` unless pytest reports a higher-priority outcome. An xdist crash report has no
 ordinary execution phase and produces `ERROR` for its associated test.
 
+### Retries
+
+When the user installs `pytest-rerunfailures`, the final attempt determines the test's
+outcome. A failed attempt followed by a successful retry produces `PASSED`, provided
+the final attempt completes successfully, including teardown. Earlier attempts that
+are retried do not contribute failures or errors to the final outcome.
+
+Within the final attempt, the existing phase precedence applies. Exhausted retries
+produce `FAILED` for a failing call or `ERROR` for a setup or teardown error. A passing
+call followed by a teardown error produces `ERROR`. Skips and expected or unexpected
+passes retain their existing meanings and do not verify requirements.
+
+An interrupted retry cannot produce `PASSED`. A final attempt without completed
+teardown remains `SKIPPED` unless it reports a higher-priority outcome. A worker crash
+produces `ERROR`, and interruptions invalidate the overall verdict as described below.
+Completion of an earlier attempt does not establish completion of a later attempt.
+
+Retries retain one result per collected test node ID under each associated requirement,
+preserving collection order. Requirement aggregation, coverage, terminal feedback and
+strict mode use these final outcomes. `pytest-rerunfailures` remains optional and controls
+when and how often tests retry. Pytest-xspec adds no retry configuration or attempt history.
+
+With pytest-xdist, retries are resolved independently for each worker's execution of a
+test before outcomes are combined. In `each` mode, one worker's successful retry cannot
+erase another worker's exhausted failure, error or incomplete execution. Existing
+controller-only reporting and crash rules apply.
+
+Acceptance criteria for retry compatibility:
+
+- A failed call, setup error or teardown error followed by a complete successful retry
+  yields one `PASSED` test record and can verify its requirement.
+- Exhausted call failures yield `FAILED`; exhausted setup or teardown errors yield `ERROR`.
+- Interruption during a retry, including after its passing call but before teardown
+  completes, leaves the test unverified and the overall verdict false.
+- A successful retry cannot hide an unsuccessful distinct test associated with the same
+  requirement, regardless of collection order.
+- Serial and distributed runs preserve complete test identities and avoid duplicate
+  records. Distributed `load` and `each` examples exercise retry completion and aggregation,
+  including different final outcomes for the same test on different workers.
+- JSON, terminal feedback and strict-mode exit behavior reflect the same final outcomes,
+  while preserving existing pytest error exit codes.
+
 ## Verification verdict and coverage
 
 A requirement is verified only when its status is `PASSED`. Unmarked test outcomes do
@@ -296,3 +338,4 @@ Contributor commands are maintained in [CONTRIBUTING.md](../CONTRIBUTING.md#chec
 | [CLI](../tests/acceptance/test_cli.py) | Plain pytest, strict enforcement, unmarked outcomes and collection errors. |
 | [Reporting](../tests/acceptance/test_reporting.py) | Terminal feedback, JSON records, requirement coverage and verdicts. |
 | [Parallel execution](../tests/acceptance/test_parallel.py) | Real load and worksteal workers, exact identities, outcome precedence, filtering, early stops, crashes and controller-only reporting. |
+| [Retries](../tests/acceptance/test_rerunfailures.py) | Final-attempt outcomes, interruption safety, shared-requirement failure preservation and independent worker results. |
