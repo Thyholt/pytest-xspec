@@ -249,6 +249,21 @@ with the value `true` in this case, and the terminal reports `Execution interrup
 
 Ordinary pytest runs do not require `pytest-xdist`. Reports cover one pytest invocation.
 
+## Retry failed tests
+
+Install `pytest-rerunfailures` to retry failed tests:
+
+```sh
+pip install 'pytest-rerunfailures>=16.7'
+pytest --reruns=1 --xspec-strict
+```
+
+The final attempt determines the test outcome. A successful retry can verify its
+specifications only after teardown completes. An interrupted retry stays unverified,
+and failures from other associated tests or workers still contribute to the result.
+Reports retain one record per test, without an attempt history.
+`pytest-rerunfailures` controls the retry policy and remains an optional dependency.
+
 ## Runnable examples
 
 Start with [the pizza][pizza], then try the other
@@ -278,6 +293,8 @@ Its `pyproject.toml` only sets test discovery, leaving the document as the requi
 
 For `acceptance_only`, add `-m xspec` to run only the marked test.
 Without that filter, the unmarked test makes pytest fail.
+Add `--reruns=1` to retry that failure once. It still fails, while the marked
+specification remains verified.
 
 ### Select and discover example tests
 
