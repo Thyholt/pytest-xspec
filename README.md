@@ -4,6 +4,8 @@
 [![Python versions][python-versions-badge]][pypi]
 [![Tests][tests-badge]][tests]
 [![Code coverage][codecov-badge]][codecov]
+[![CodeScene Average Code Health][codescene-average-code-health-badge]][codescene]
+[![CodeScene Hotspot Code Health][codescene-hotspot-code-health-badge]][codescene]
 
 **Executable specifications and verification with pytest.**
 
@@ -341,3 +343,6 @@ See [CONTRIBUTING.md][contributing] for proposing changes, setup, tests and pull
 
 [codecov]: https://app.codecov.io/gh/Thyholt/pytest-xspec
 [codecov-badge]: https://codecov.io/gh/Thyholt/pytest-xspec/branch/master/graph/badge.svg
+[codescene]: https://codescene.io/projects/87264
+[codescene-average-code-health-badge]: https://codescene.io/projects/87264/status-badges/average-code-health
+[codescene-hotspot-code-health-badge]: https://codescene.io/projects/87264/status-badges/hotspot-code-health
