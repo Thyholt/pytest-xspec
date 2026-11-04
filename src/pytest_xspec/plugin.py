@@ -10,7 +10,14 @@ from _pytest.terminal import TerminalReporter
 from pytest_xspec.collector import requirement_ids
 from pytest_xspec.config import load_requirements
 from pytest_xspec.outcomes import aggregate, phase_outcome
-from pytest_xspec.reporting import Report, SelectionScope, build_report, write_json, write_terminal
+from pytest_xspec.reporting import (
+    ExecutionStatus,
+    Report,
+    SelectionScope,
+    build_report,
+    write_json,
+    write_terminal,
+)
 
 if TYPE_CHECKING:
     from execnet import Channel
@@ -79,43 +86,47 @@ class RequirementPlugin:
             }
 
         self.outcomes: dict[str, str | None] = {}
-        self.collection_errors: set[str] = set()
+        self.execution = ExecutionStatus()
         self.is_worker = hasattr(config, "workerinput")
         self.completed: set[str] = set()
-        self.interrupted = False
         self.collection_error: str | None = None
         self.collected_nodeids: dict[str, str] = {}
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> Generator[None]:
+        try:
+            self._collect_requirements(items)
+        except pytest.UsageError as error:
+            self.collection_error = str(error)
+            raise
+
+        yield
+
+        if self.selected_requirements:
+            self._select_requirements(items)
+
+    def _collect_requirements(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
             item.stash[COLLECTED_NODEID] = item.nodeid
-            try:
-                identifiers = requirement_ids(item, self.requirements)
-            except pytest.UsageError as error:
-                self.collection_error = str(error)
-                raise
-
+            identifiers = requirement_ids(item, self.requirements)
             if identifiers and item.nodeid not in self.outcomes:
                 self.outcomes[item.nodeid] = None
 
                 for identifier in identifiers:
                     self.requirements[identifier].append(item.nodeid)
 
-        yield
-
-        if self.selected_requirements:
-            selected_nodeids = {
-                nodeid
-                for identifier in self.selected_requirements
-                for nodeid in self.requirements[identifier]
-            }
-            deselected = [
-                item for item in items if item.stash[COLLECTED_NODEID] not in selected_nodeids
-            ]
-            items[:] = [item for item in items if item.stash[COLLECTED_NODEID] in selected_nodeids]
-            if deselected:
-                self.config.hook.pytest_deselected(items=deselected)
+    def _select_requirements(self, items: list[pytest.Item]) -> None:
+        selected_nodeids = {
+            nodeid
+            for identifier in self.selected_requirements
+            for nodeid in self.requirements[identifier]
+        }
+        deselected = [
+            item for item in items if item.stash[COLLECTED_NODEID] not in selected_nodeids
+        ]
+        items[:] = [item for item in items if item.stash[COLLECTED_NODEID] in selected_nodeids]
+        if deselected:
+            self.config.hook.pytest_deselected(items=deselected)
 
     def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
@@ -125,7 +136,7 @@ class RequirementPlugin:
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
-            self.collection_errors.add(report.nodeid)
+            self.execution.collection_errors.add(report.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         nodeid = self.collected_nodeids.get(report.nodeid, report.nodeid)
@@ -183,7 +194,7 @@ class RequirementPlugin:
         # thread so merging cannot race with another worker or a test report.
         collection = cast(WorkerCollection, channel.receive())
         if collection["error"] is not None:
-            self.interrupted = True
+            self.execution.interrupted = True
             raise pytest.UsageError(collection["error"])
 
         self.collected_nodeids.update(collection["nodeids"])
@@ -203,13 +214,13 @@ class RequirementPlugin:
             pytest.ExitCode.INTERNAL_ERROR,
             pytest.ExitCode.USAGE_ERROR,
         ):
-            self.interrupted = True
+            self.execution.interrupted = True
 
     def pytest_internalerror(self) -> None:
-        self.interrupted = True
+        self.execution.interrupted = True
 
     def pytest_keyboard_interrupt(self) -> None:
-        self.interrupted = True
+        self.execution.interrupted = True
 
     def report(self) -> Report:
         outcomes = {
@@ -219,9 +230,8 @@ class RequirementPlugin:
         return build_report(
             self.requirements,
             outcomes,
-            len(self.collection_errors),
+            self.execution,
             scope=self.scope,
-            interrupted=self.interrupted,
         )
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
@@ -242,7 +252,11 @@ class RequirementPlugin:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
-        if not self.is_worker and (
-            self.config.getoption("xspec_report") or self.config.getoption("xspec_strict")
-        ):
+        if self.is_worker:
+            return
+
+        report_requested = self.config.getoption("xspec_report") or self.config.getoption(
+            "xspec_strict"
+        )
+        if report_requested:
             write_terminal(self.report(), terminalreporter)
