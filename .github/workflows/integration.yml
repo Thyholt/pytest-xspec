@@ -20,14 +20,17 @@ jobs:
           - python: "3.10"
             pytest: "pytest>=8,<9"
             xdist: "pytest-xdist>=3.8.0"
+            rerunfailures: "pytest-rerunfailures>=16.7"
 
           - python: "3.13"
             pytest: "pytest>=8"
             xdist: "pytest-xdist>=3.8.0"
+            rerunfailures: "pytest-rerunfailures>=16.7"
 
           - python: "3.14"
             pytest: "pytest==9.1.1"
             xdist: "pytest-xdist==3.8.0"
+            rerunfailures: "pytest-rerunfailures>=16.7"
 
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +47,7 @@ jobs:
         run: >-
           uv pip install --python /tmp/acceptance-integration/bin/python
           dist/*.whl '${{ matrix.pytest }}' '${{ matrix.xdist }}'
+          '${{ matrix.rerunfailures }}'
 
       - name: Verify installed distribution and plugin identity
         working-directory: /tmp

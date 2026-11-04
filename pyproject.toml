@@ -22,6 +22,7 @@ xspec = "pytest_xspec.plugin"
 dev = [
     "prek>=0.5.5",
     "pytest-cov>=7",
+    "pytest-rerunfailures>=16.7",
     "pytest-xdist>=3.8.0",
     "ruff>=0.12",
     "rumdl>=0.2.79",
