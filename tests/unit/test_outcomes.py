@@ -27,3 +27,10 @@ def test_a_strict_unexpected_pass_has_the_same_outcome_as_a_non_strict_one() -> 
     outcome = phase_outcome("call", "failed", longrepr=diagnostic)
 
     assert outcome == "XPASSED"
+
+
+@pytest.mark.parametrize("when", ["setup", "call", "teardown"])
+def test_rerun_reports_are_attempt_boundaries_not_passes(when: str) -> None:
+    outcome = phase_outcome(when, "rerun")
+
+    assert outcome == "RERUN"
