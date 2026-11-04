@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pytest-xspec"
-version = "0.7.0"
+version = "0.8.0"
 description = "Executable acceptance criteria for pytest"
 readme = "README.md"
 requires-python = ">=3.10"
