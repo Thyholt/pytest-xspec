@@ -227,37 +227,6 @@ A document without `requirements`, including an empty file, is a configuration e
 Invalid documents produce an error before tests run.
 If no source exists, there are zero declared specifications.
 
-## Run tests in parallel
-
-Install `pytest-xdist` alongside `pytest-xspec` to distribute tests across workers:
-
-```sh
-pip install pytest-xdist
-pytest -n 2 --xspec-strict --xspec-json=report.json
-```
-
-Parallel runs produce one combined report and use the same verification rules as serial
-runs. Every test associated with a specification must pass. If the same test runs on
-multiple workers, a pass on one worker cannot cancel a failure or skip on another.
-
-A worker crash or interrupted run prevents overall verification, even if all reported
-tests passed. `pytest-xdist` is optional and is only needed for parallel execution.
-
-## Retry failed tests
-
-Install `pytest-rerunfailures` to retry failed tests:
-
-```sh
-pip install 'pytest-rerunfailures>=16.7'
-pytest --reruns=1 --xspec-strict
-```
-
-The final attempt determines the test outcome. A successful retry can verify its
-specifications only after teardown completes. An interrupted retry stays unverified,
-and failures from other associated tests or workers still contribute to the result.
-Reports retain one record per test, without an attempt history.
-`pytest-rerunfailures` controls the retry policy and remains an optional dependency.
-
 ## Runnable examples
 
 Start with [the pizza][pizza], then try the other
@@ -323,6 +292,39 @@ uv run --locked pytest examples/test_examples.py -n 0
 
 All six checks should pass, including checks for the examples that deliberately
 fail. The examples are also verified in CI.
+
+## Compatibility
+
+### Run tests in parallel
+
+Install `pytest-xdist` alongside `pytest-xspec` to distribute tests across workers:
+
+```sh
+pip install pytest-xdist
+pytest -n 2 --xspec-strict --xspec-json=report.json
+```
+
+Parallel runs produce one combined report and use the same verification rules as serial
+runs. Every test associated with a specification must pass. If the same test runs on
+multiple workers, a pass on one worker cannot cancel a failure or skip on another.
+
+A worker crash or interrupted run prevents overall verification, even if all reported
+tests passed. `pytest-xdist` is optional and is only needed for parallel execution.
+
+### Retry failed tests
+
+Install `pytest-rerunfailures` to retry failed tests:
+
+```sh
+pip install 'pytest-rerunfailures>=16.7'
+pytest --reruns=1 --xspec-strict
+```
+
+The final attempt determines the test outcome. A successful retry can verify its
+specifications only after teardown completes. An interrupted retry stays unverified,
+and failures from other associated tests or workers still contribute to the result.
+Reports retain one record per test, without an attempt history.
+`pytest-rerunfailures` controls the retry policy and remains an optional dependency.
 
 ## Development disclosure
 
