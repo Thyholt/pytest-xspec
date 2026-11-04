@@ -355,6 +355,7 @@ underlying issue goes away (model upgrades, refactors, process changes).
   acceptance tests and their scenario files.
 - Structure tests as Arrange, Act, Assert blocks separated by blank lines;
   keep execution out of assertions and omit AAA comments.
+- Put scheduler-specific worker counts and expected pass counts in `pytest.param` rows.
 - Use parallel names for related validation tests, distinguishing file structure from
   requirement inventory contents rather than mixing file-format and domain terms.
 - A rejected acceptance input must produce a domain diagnostic; an unrecognized
