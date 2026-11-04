@@ -71,23 +71,23 @@ def test_parallel_results_match_serial_results(
 
 @pytest.mark.parametrize("scheduler", ["load", "worksteal"])
 @pytest.mark.parametrize(
-    ("scenario", "status"),
+    "case",
     [
-        pytest.param(failed_test, "FAILED", id="failed-test"),
-        pytest.param(setup_error, "ERROR", id="setup-error"),
-        pytest.param(teardown_error_after_pass, "ERROR", id="teardown-error"),
-        pytest.param(skipped_test, "SKIPPED", id="skipped-test"),
-        pytest.param(expected_failure, "XFAILED", id="expected-failure"),
-        pytest.param(unexpected_pass, "XPASSED", id="unexpected-pass"),
+        pytest.param((failed_test, "FAILED"), id="failed-test"),
+        pytest.param((setup_error, "ERROR"), id="setup-error"),
+        pytest.param((teardown_error_after_pass, "ERROR"), id="teardown-error"),
+        pytest.param((skipped_test, "SKIPPED"), id="skipped-test"),
+        pytest.param((expected_failure, "XFAILED"), id="expected-failure"),
+        pytest.param((unexpected_pass, "XPASSED"), id="unexpected-pass"),
     ],
 )
 def test_parallel_unsuccessful_tests_remain_unverified(
     user_project: UserProject,
     read_report: ReadReport,
     scheduler: str,
-    scenario: ModuleType,
-    status: str,
+    case: tuple[ModuleType, str],
 ) -> None:
+    scenario, status = case
     project = user_project(["REQ-001"], scenario)
 
     result = project.runpytest_subprocess(
