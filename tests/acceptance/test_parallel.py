@@ -34,11 +34,24 @@ from tests.acceptance.types import ReadReport, UserProject
 
 
 @pytest.mark.parametrize(
-    "scheduler", ["no", "load", "loadscope", "loadfile", "loadgroup", "worksteal", "each"]
+    ("execution", "expected_passes"),
+    [
+        pytest.param(("no", "0"), 2, id="no"),
+        pytest.param(("load", "2"), 2, id="load"),
+        pytest.param(("loadscope", "2"), 2, id="loadscope"),
+        pytest.param(("loadfile", "2"), 2, id="loadfile"),
+        pytest.param(("loadgroup", "2"), 2, id="loadgroup"),
+        pytest.param(("worksteal", "2"), 2, id="worksteal"),
+        pytest.param(("each", "2"), 4, id="each"),
+    ],
 )
 def test_parallel_results_match_serial_results(
-    user_project: UserProject, read_report: ReadReport, scheduler: str
+    user_project: UserProject,
+    read_report: ReadReport,
+    execution: tuple[str, str],
+    expected_passes: int,
 ) -> None:
+    scheduler, workers = execution
     project = user_project(["REQ-001", "REQ-002"], parameterized)
 
     serial = project.runpytest_subprocess("-n", "0", "--xspec-strict", "--xspec-json=report.json")
@@ -46,14 +59,14 @@ def test_parallel_results_match_serial_results(
     (project.path / "report.json").unlink()
     parallel = project.runpytest_subprocess(
         "-n",
-        "0" if scheduler == "no" else "2",
+        workers,
         f"--dist={scheduler}",
         "--xspec-strict",
         "--xspec-json=report.json",
     )
 
     assert serial.ret == parallel.ret == pytest.ExitCode.OK
-    parallel.assert_outcomes(passed=4 if scheduler == "each" else 2)
+    parallel.assert_outcomes(passed=expected_passes)
     report = read_report(project)
     assert report == serial_report
     for identifier in ("REQ-001", "REQ-002"):
