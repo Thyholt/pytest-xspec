@@ -395,6 +395,7 @@ underlying issue goes away (model upgrades, refactors, process changes).
   uploads before requesting manual account changes.
 - For stale badges, verify both the source image and GitHub's proxied image
   before claiming the issue is fixed.
+- Use existing Git refs in draft release links, and verify them before requesting review.
 
 ---
 
