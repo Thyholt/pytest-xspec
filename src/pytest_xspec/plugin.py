@@ -2,7 +2,6 @@
 
 from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import pytest
 from _pytest.terminal import TerminalReporter
@@ -19,23 +18,7 @@ from pytest_xspec.reporting import (
     write_json,
     write_terminal,
 )
-
-if TYPE_CHECKING:
-    from execnet import Channel
-    from xdist.workermanage import WorkerController
-
-COLLECTED_NODEID = pytest.StashKey[str]()
-
-
-class WorkerCollection(TypedDict):
-    requirements: dict[str, list[str]]
-    deselected: list[str]
-    error: str | None
-    nodeids: dict[str, str]
-
-
-class WorkerConfig(Protocol):
-    workerinput: dict[str, object]
+from pytest_xspec.xdist import CollectionSnapshot, WorkerCoordinator
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -56,7 +39,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "xspec(id): associate a test with a declared requirement")
-    config.pluginmanager.register(RequirementPlugin(config), "xspec-results")
+    plugin = RequirementPlugin(config)
+    config.pluginmanager.register(plugin, "xspec-results")
+    config.pluginmanager.register(plugin.workers, "xspec-workers")
 
 
 class RequirementPlugin:
@@ -88,9 +73,9 @@ class RequirementPlugin:
 
         self.results = ExecutionResults()
         self.execution = ExecutionStatus()
-        self.is_worker = hasattr(config, "workerinput")
         self.collection_error: str | None = None
-        self.collected_nodeids: dict[str, str] = {}
+        self._collected_nodeid = pytest.StashKey[str]()
+        self.workers = WorkerCoordinator(config, self)
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> Generator[None]:
@@ -107,7 +92,7 @@ class RequirementPlugin:
 
     def _collect_requirements(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
-            item.stash[COLLECTED_NODEID] = item.nodeid
+            item.stash[self._collected_nodeid] = item.nodeid
             identifiers = requirement_ids(item, self.requirements)
             if not identifiers or not self.results.collect(item.nodeid):
                 continue
@@ -115,22 +100,23 @@ class RequirementPlugin:
             for identifier in identifiers:
                 self.requirements[identifier].append(item.nodeid)
 
+    def original_nodeid(self, item: pytest.Item) -> str:
+        return item.stash.get(self._collected_nodeid, item.nodeid)
+
     def _select_requirements(self, items: list[pytest.Item]) -> None:
         selected_nodeids = {
             nodeid
             for identifier in self.selected_requirements
             for nodeid in self.requirements[identifier]
         }
-        deselected = [
-            item for item in items if item.stash[COLLECTED_NODEID] not in selected_nodeids
-        ]
-        items[:] = [item for item in items if item.stash[COLLECTED_NODEID] in selected_nodeids]
+        deselected = [item for item in items if self.original_nodeid(item) not in selected_nodeids]
+        items[:] = [item for item in items if self.original_nodeid(item) in selected_nodeids]
         if deselected:
             self.config.hook.pytest_deselected(items=deselected)
 
     def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
         for item in items:
-            nodeid = item.stash.get(COLLECTED_NODEID, item.nodeid)
+            nodeid = self.original_nodeid(item)
             self.results.deselect(nodeid)
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
@@ -138,56 +124,23 @@ class RequirementPlugin:
             self.execution.collection_errors.add(report.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        nodeid = self.collected_nodeids.get(report.nodeid, report.nodeid)
+        nodeid, worker = self.workers.execution_identity(report)
         outcome = phase_outcome(
             report.when,
             report.outcome,
             wasxfail=hasattr(report, "wasxfail"),
             longrepr=report.longrepr,
         )
-        self.results.record(nodeid, report.when, outcome, worker=getattr(report, "node", None))
+        self.results.record(nodeid, report.when, outcome, worker=worker)
 
-    @pytest.hookimpl(optionalhook=True)
-    def pytest_configure_node(self, node: "WorkerController") -> None:
-        node.workerinput["xspec_channel"] = node.gateway.newchannel()
+    def collection_snapshot(self) -> CollectionSnapshot:
+        return {
+            "requirements": self.requirements,
+            "deselected": self.results.deselected,
+            "error": self.collection_error,
+        }
 
-    @pytest.hookimpl(tryfirst=True)
-    def pytest_collection_finish(self, session: pytest.Session) -> None:
-        if not self.is_worker:
-            return
-
-        # loadgroup appends group names to execution IDs after associations
-        # are collected. Keep the original IDs for selection and reporting.
-        for item in session.items:
-            original = item.stash.get(COLLECTED_NODEID, item.nodeid)
-            if item.nodeid != original:
-                self.collected_nodeids[item.nodeid] = original
-
-        workerinput = cast(WorkerConfig, self.config).workerinput
-        channel = cast("Channel", workerinput["xspec_channel"])
-        # Send before xdist announces collection completion, so even a crash
-        # in the first fixture cannot lose collected or deselected identities.
-        channel.send(
-            {
-                "requirements": self.requirements,
-                "deselected": self.results.deselected,
-                "error": self.collection_error,
-                "nodeids": self.collected_nodeids,
-            }
-        )
-        channel.close()
-
-    @pytest.hookimpl(optionalhook=True)
-    def pytest_xdist_node_collection_finished(self, node: "WorkerController") -> None:
-        channel = cast("Channel", node.workerinput["xspec_channel"])
-        # The collection event follows the payload. Receive on the controller
-        # thread so merging cannot race with another worker or a test report.
-        collection = cast(WorkerCollection, channel.receive())
-        if collection["error"] is not None:
-            self.execution.interrupted = True
-            raise pytest.UsageError(collection["error"])
-
-        self.collected_nodeids.update(collection["nodeids"])
+    def include_collection(self, collection: CollectionSnapshot) -> None:
         deselected = set(collection["deselected"])
         for identifier, nodeids in collection["requirements"].items():
             known = set(self.requirements[identifier])
@@ -199,20 +152,14 @@ class RequirementPlugin:
                 if nodeid in deselected:
                     self.results.deselect(nodeid)
 
-    @pytest.hookimpl(optionalhook=True)
-    def pytest_testnodedown(self, node: "WorkerController", error: object | None) -> None:
-        if error is not None or node.workeroutput["exitstatus"] in (
-            pytest.ExitCode.INTERRUPTED,
-            pytest.ExitCode.INTERNAL_ERROR,
-            pytest.ExitCode.USAGE_ERROR,
-        ):
-            self.execution.interrupted = True
+    def interrupt(self) -> None:
+        self.execution.interrupted = True
 
     def pytest_internalerror(self) -> None:
-        self.execution.interrupted = True
+        self.interrupt()
 
     def pytest_keyboard_interrupt(self) -> None:
-        self.execution.interrupted = True
+        self.interrupt()
 
     def report(self) -> Report:
         return build_report(
@@ -223,7 +170,7 @@ class RequirementPlugin:
         )
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
-        if self.is_worker:
+        if self.workers.is_worker:
             return
 
         report = self.report()
@@ -239,7 +186,7 @@ class RequirementPlugin:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: TerminalReporter) -> None:
-        if self.is_worker:
+        if self.workers.is_worker:
             return
 
         report_requested = self.config.getoption("xspec_report") or self.config.getoption(
