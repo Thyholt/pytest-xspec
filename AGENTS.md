@@ -300,7 +300,8 @@ destructive commands or configuration for other agents.
 - Use casts only after runtime validation or at serialization boundaries with a known schema.
   A cast does not validate the value. Keep lint exceptions in [pyproject.toml](pyproject.toml).
   Limit S101 exceptions to test code, including examples, and FBT001 exceptions to `tests/`.
-- Runtime dependencies must remain limited to pytest for v0.1.
+- Runtime dependencies remain limited to pytest. Use handwritten report validation for now
+  and retain original input data after validation.
 - Keep `__init__.py` files completely empty: no docstrings, comments or code.
   The package-root `__init__.py` may only export public user-facing functions.
 - Do not merge, release or deploy as a side effect of preparing a reviewable change.
@@ -324,15 +325,32 @@ underlying issue goes away (model upgrades, refactors, process changes).
   their editor.
 - Read `.codex/config.toml` before selecting skills and honor `enabled = false`;
   use enabled project workflows instead of disabled home-level workflows.
+- Install requested project skills under `.agents/skills/<author>/` with their references
+  and source records; a home-directory installation does not satisfy a project-local request.
 - Keep discussion-only turns read-only until the user requests edits.
+- Include Python tests in design examples for pytest-xspec, even when the proposed
+  plugin behavior is not implemented yet. Describe examples in the main README's
+  example table, without extra explanatory text below it or a separate example README.
+  Include concrete commands for examples that require separate test selections.
+  Put runnable commands in the example table, using run.sh for multi-run workflows
+  instead of repeating their commands below the table.
+  Show multi-run design workflows as simple shell commands, without subprocess wrappers.
+  Use echo instead of comments to explain steps in example shell scripts.
+  Omit introductory sketch disclaimers from scripts when that context is already established.
+  Use simulated bench operations in device examples, keeping run IDs and external metadata
+  out of test bodies instead of replaying prewritten evidence files.
 - Create commits only when the user explicitly requests a commit. Approval to implement changes
   does not authorize committing them.
 - Keep pull request descriptions short, covering the change and essential validation.
-- Fix required code-health findings before resolving their threads; a rationale alone does not
-  clear a failed quality gate. Leave disputed findings open for the maintainer's decision.
+- Treat CodeScene code-health findings as a required review gate. Fix findings before resolving
+  their threads; a rationale alone does not clear a failed quality gate. Leave disputed findings
+  open for the maintainer's decision. Test duplication is accepted; do not refactor tests solely
+  to clear CodeScene duplication findings.
 - Update verified acceptance checkboxes before closing issues, and record agreed scope changes
   explicitly instead of marking superseded criteria as implemented.
 - Keep `tasks/plan.md` and `tasks/todo.md` local and out of commits.
+- When a feature is introduced to drive refactoring, make structural improvement an explicit
+  deliverable and use the feature's tests as evidence and protection for that refactoring.
 - Keep README guidance focused on what users learn from runnable public examples.
   Present its motivation as one connected argument through engineering principles,
   without naming specific development methods.
@@ -356,6 +374,14 @@ underlying issue goes away (model upgrades, refactors, process changes).
 - Structure tests as Arrange, Act, Assert blocks separated by blank lines;
   keep execution out of assertions and omit AAA comments.
 - Put scheduler-specific worker counts and expected pass counts in `pytest.param` rows.
+- Reduce acceptance-test inputs by removing duplicate labels, including case variants such as
+  `failed` and `FAILED`, and separating cases with fixed outcomes. Keep each assertion focused
+  on the test's named behavior; concentrate full-report comparisons in preservation tests.
+- Use guard clauses to separate attempt and worker eligibility from scenario-specific actions.
+- Keep collection identity stash keys instance-owned; expose identity lookup through the
+  worker host interface instead of sharing module-level keys.
+- Express lifecycle ordering through named operations and explicit inputs; reserve comments
+  for cross-plugin ordering constraints that code alone cannot explain.
 - Use parallel names for related validation tests, distinguishing file structure from
   requirement inventory contents rather than mixing file-format and domain terms.
 - A rejected acceptance input must produce a domain diagnostic; an unrecognized
@@ -363,6 +389,10 @@ underlying issue goes away (model upgrades, refactors, process changes).
 - Check aggregation in both test collection orders to catch first-result shortcuts.
 - Observe scenario execution through stdout, and pair every no-execution check with a positive
   execution check so missing instrumentation cannot make the test pass.
+- Hide stdout parsing in observation helpers; keep expected events, phases and counts in tests.
+  Keep generic run observations shared and scenario-specific trace helpers beside their tests.
+- Keep generic formatting checks in reporting tests; compatibility assertions must prove
+  execution, the named invariant or a distinct regression rather than repeat those checks.
 - Keep acceptance expectations local and example behavior in named, lintable Python
   scenario files; do not import scenarios from other test modules or generate
   test bodies through substitutions and fallbacks. Exclude scenario files from
@@ -386,6 +416,9 @@ underlying issue goes away (model upgrades, refactors, process changes).
 - Keep the product name `pytest-xspec` consistent across packaging, configuration,
   reports and documentation; use `pytest_xspec` for Python imports.
 - Trigger CI on pull requests and pushes to `master`; avoid duplicate feature-branch push runs.
+- Keep integration-test plugin version constraints together in the CI matrix.
+  When adding acceptance dependencies, update every isolated wheel-test environment,
+  including the publish workflow, and verify its installed-package command.
 - Report collected tests that never execute as SKIPPED, including collect-only
   and early-stop runs; keep their associated requirements unverified.
 - Keep `tests`, `tests/unit` and `tests/acceptance` as packages with empty
@@ -396,6 +429,9 @@ underlying issue goes away (model upgrades, refactors, process changes).
 - For stale badges, verify both the source image and GitHub's proxied image
   before claiming the issue is fixed.
 - Use existing Git refs in draft release links, and verify them before requesting review.
+- Keep issue references and documentation-update tasks out of the specification;
+  describe behavior and acceptance criteria instead. Use `--xspec-strict` for strict
+  verification in both pytest and standalone commands.
 
 ---
 

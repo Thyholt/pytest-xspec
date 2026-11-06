@@ -183,6 +183,123 @@ the plugin still knows about the tests excluded by the filter and reports marked
 ones as `DESELECTED`. If you run only one folder, it cannot see tests in other
 folders.
 
+### Read JSON reports
+
+`--xspec-json=PATH` writes every declared requirement, its associated test outcomes
+and a verification summary. This is the [quickstart report][report]:
+
+```json
+{
+  "requirements": {
+    "REQ-001": {
+      "status": "PASSED",
+      "tests": [
+        {"nodeid": "test_behavior.py::test_pizza_has_two_slices", "outcome": "PASSED"}
+      ]
+    }
+  },
+  "summary": {
+    "requirements": 1,
+    "passed": 1,
+    "unverified": 0,
+    "coverage": 100.0,
+    "verified": true,
+    "collection_errors": 0
+  }
+}
+```
+
+`requirements` is an object keyed by the exact declared IDs, in inventory order.
+Each value has a string `status` and a `tests` array in collection order. Each test
+has its complete pytest `nodeid`, including parameter values, and a string `outcome`.
+Outcomes use the [statuses described above](#read-specification-statuses).
+`MISSING` applies only to a requirement with an empty test array.
+A test linked to several requirements appears under each one.
+
+| Summary field | JSON type | Meaning |
+| --- | --- | --- |
+| `requirements` | Integer | Number of declared requirements. |
+| `passed` | Integer | Requirements whose status is `PASSED`. |
+| `unverified` | Integer | Remaining requirements. |
+| `coverage` | Number | Passed requirements divided by declared requirements, as a percentage. |
+| `verified` | Boolean | Every requirement passed, with no collection errors or interruption. |
+| `collection_errors` | Integer | Errors encountered while finding tests. |
+| `interrupted` | Boolean, optional | Present as `true` when execution was interrupted. |
+
+An empty inventory has zero counts, 0.0% coverage and a true verdict unless collection
+errors or interruption prevent verification. A true verdict does not guarantee pytest's
+exit code is zero, because unmarked tests can still fail.
+
+### Read selection scope
+
+Using `--xspec-select` adds a top-level `scope` object with these fields:
+
+| Scope field | JSON type | Meaning |
+| --- | --- | --- |
+| `selected_requirements` | Array of strings | Exact selected IDs in first occurrence order, without duplicates. |
+| `collection_paths` | Array of strings | Effective pytest collection paths or node IDs, in argument order. |
+| `keyword_expression` | String | The `-k` expression, or an empty string. |
+| `marker_expression` | String | The `-m` expression, or an empty string. |
+| `collect_only` | Boolean | Whether tests were collected without execution. |
+
+Using only `-k` or `-m` filters tests but does not currently add `scope`. Its absence
+means selection context was not recorded, not that every test ran. Scope describes
+selection and never reduces the requirement inventory used for coverage.
+
+### Combine reports from separate runs
+
+Add `--xspec-run-id=ID` when generating each report. This adds a top-level string
+`run_id`, without changing test records or verification. IDs must contain at least
+one character other than whitespace and are preserved exactly as supplied.
+Without this option, `run_id` is absent.
+
+Combine the labeled reports with:
+
+```sh
+python -m pytest_xspec combine report-a.json report-b.json \
+    --output=combined.json --xspec-strict
+```
+
+The [combine reports example](#runnable-examples) runs two different tests for the
+same requirement in separate invocations, then combines their reports. Each input
+must have a distinct run ID and declare the same requirement IDs, though their order
+may differ. Unlabeled reports and reports that are already combined are rejected.
+
+The combined JSON keeps the evidence and conclusion together:
+
+| Field | Contents |
+| --- | --- |
+| `runs` | Array of original report objects in input order. Each retains its `run_id`, `requirements`, `summary` and optional `scope`. |
+| `requirements` | Object keyed by requirement ID, with a `status` for each combined conclusion. There are no duplicate test arrays here. |
+| `summary` | The combined counts, coverage, verdict, collection errors and optional interruption flag. |
+
+Combined requirement order follows the first input. Original test observations and
+their order stay within each run. There is no top-level combined `scope`, because
+each run can have a different selection.
+
+For the same test node ID, an observed outcome replaces deselection when calculating
+the combined result. For example, a pass for the volume test in run A and a pass for
+the alarm test in run B can verify their shared requirement, even though each run
+deselected the other test. All four observations remain in the report. Terminal test
+counts count the two distinct tests, rather than the four observations.
+Each source report retains its unverified verdict, while the combined verdict is true.
+
+A pass cannot erase a failure, error, skip, expected failure or unexpected pass from
+another run. Those outcomes use the existing precedence. A test deselected in every
+run remains `DESELECTED`, and a requirement without tests remains `MISSING`.
+Collection errors are summed across runs. Any interrupted input prevents a true
+combined verdict, even at 100% coverage.
+
+Combination reads reports without importing or executing the original tests.
+It prints a summary and writes the requested output. With `--xspec-strict`, its exit
+code is 0 for verified results or 1 for unverified results. Without that option,
+successful combination exits 0 regardless of the verdict. Usage, input and output
+errors exit 2. Inputs are never modified, and invalid inputs do not replace an existing
+output report.
+
+Matching IDs do not prove that runs used the same code or environment. Decide which
+runs belong together using your own execution records, measurements and logs.
+
 ## Use an existing specification
 
 If you maintain specifications elsewhere, declare their IDs in `pyproject.toml`
@@ -232,45 +349,18 @@ If no source exists, there are zero declared specifications.
 Start with [the pizza][pizza], then try the other
 examples to see what makes a specification pass or remain unverified.
 
-Run the commands below from the repository root. Dependencies are installed automatically.
+| Example | Command | With `--xspec-strict` | Exit code |
+| --- | --- | --- | --- |
+| [Quickstart][quickstart] | `uv run --locked pytest examples/quickstart --xspec-strict` | `PASSED`, 100% coverage | 0 |
+| [Specification document][specification-document] | `uv run --locked pytest examples/specification_document --xspec-strict` | `PASSED`, 100% coverage | 0 |
+| [Missing specification][missing-requirement] | `uv run --locked pytest examples/missing_requirement --xspec-strict` | `MISSING`, 50% coverage | 1 |
+| [Partial verification][partial-verification] | `uv run --locked pytest examples/partial_verification --xspec-strict` | `SKIPPED`, 0% coverage | 1 |
+| [Acceptance only][acceptance-only] | `uv run --locked pytest examples/acceptance_only -m xspec --xspec-strict` | `PASSED` | 0 |
+| [Combine reports][combine-reports] | `bash examples/combine_reports/run.sh` | `PASSED`, 100% coverage | 0 |
 
-| Example | With `--xspec-strict` | Exit code |
-| --- | --- | --- |
-| [Quickstart][quickstart] - Two slices of pizza | `PASSED`, 100% coverage | 0 |
-| [Specification document][specification-document] - Addition rules in TOML | `PASSED`, 100% coverage | 0 |
-| [Missing specification][missing-requirement] - A lost sock | `MISSING`, 50% coverage | 1 |
-| [Partial verification][partial-verification] - Cat skips a meeting | `SKIPPED`, 0% coverage | 1 |
-| [Acceptance only][acceptance-only] - Duck versus cheese | `PASSED` with `-m xspec` | 0 |
-
-### Run an example
-
-Run the `Quickstart` example, then replace `quickstart` with another example folder.
-
-```sh
-uv run --locked pytest examples/quickstart --xspec-strict
-```
-
-For `specification_document`, the requirements live in
-[xspec.toml](examples/specification_document/xspec.toml).
-Its `pyproject.toml` only sets test discovery, leaving the document as the requirement source.
-
-For `acceptance_only`, add `-m xspec` to run only the marked test.
-Without that filter, the unmarked test makes pytest fail.
-Add `--reruns=1` to retry that failure once. It still fails, while the marked
-specification remains verified.
-
-### Select and discover example tests
-
-Use the same example command with `--xspec-select=REQ-001` to select the pizza test.
-Add `--collect-only -q` to discover it without running it:
-
-```sh
-uv run --locked pytest examples/quickstart --xspec-select=REQ-001 --collect-only -q
-```
-
-For `missing_requirement`, repeat `--xspec-select=REQ-002` to select both declared IDs.
-Only the existing sock test runs. With `--xspec-strict`, the missing sock still
-makes verification fail.
+The combine workflow creates [run A](examples/combine_reports/report-a.json),
+[run B](examples/combine_reports/report-b.json) and the
+[combined report](examples/combine_reports/combined.json).
 
 ### Inspect the JSON report
 
@@ -290,7 +380,7 @@ Check that every example behaves as described.
 uv run --locked pytest examples/test_examples.py -n 0
 ```
 
-All six checks should pass, including checks for the examples that deliberately
+All seven checks should pass, including checks for the examples that deliberately
 fail. The examples are also verified in CI.
 
 ## Compatibility
@@ -345,6 +435,7 @@ See [CONTRIBUTING.md][contributing] for proposing changes, setup, tests and pull
 [specification-document]: https://github.com/Thyholt/pytest-xspec/tree/master/examples/specification_document
 [missing-requirement]: https://github.com/Thyholt/pytest-xspec/tree/master/examples/missing_requirement
 [partial-verification]: https://github.com/Thyholt/pytest-xspec/tree/master/examples/partial_verification
+[combine-reports]: examples/combine_reports/
 [report]: https://github.com/Thyholt/pytest-xspec/blob/master/examples/quickstart/report.json
 [contributing]: https://github.com/Thyholt/pytest-xspec/blob/master/CONTRIBUTING.md
 

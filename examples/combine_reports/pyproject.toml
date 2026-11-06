@@ -1,0 +1,5 @@
+[tool.xspec]
+requirements = ["REQ-001"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

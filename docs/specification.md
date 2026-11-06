@@ -203,7 +203,8 @@ Worker errors that abort collection or execution also prevent successful verific
 
 Only the controller writes the requested JSON file and terminal requirement summary.
 Workers do not apply strict mode to their partial execution results. Existing pytest error
-exit codes are preserved. Combining results from separate invocations is outside this contract.
+exit codes are preserved. Results from separate invocations follow the
+[combination rules](#combining-separate-runs).
 
 ## Command-line behavior
 
@@ -214,6 +215,7 @@ exit codes are preserved. Combining results from separate invocations is outside
 | `pytest --xspec-strict` | Print feedback and fail when the verification verdict is false. |
 | `pytest --xspec-json=PATH` | Write structured verification results to the requested path. |
 | `pytest --xspec-select=ID` | Select tests associated with the exact requirement ID. |
+| `pytest --xspec-run-id=ID` | Label the invocation in JSON reports for later combination. |
 | `pytest -m xspec --xspec-strict` | Select requirement-marked tests and enforce verification. |
 
 Strict mode evaluates the entire declared inventory, including requirements outside
@@ -322,6 +324,177 @@ Arrays use JSON notation to preserve opaque IDs. Empty filter expressions displa
 and discovery displays `yes` or `no`. Without requirement selection, scope lines are absent.
 Counts and coverage always describe the entire declared inventory.
 
+## Combining separate runs
+
+### Purpose and boundaries
+
+Users may execute different tests for the same requirement in separate pytest invocations.
+For example, one run executes `test_first_behavior` and deselects `test_second_behavior`,
+while another run executes the second test and deselects the first. Each individual report
+is unverified. Together, the passing observations can verify the requirement.
+
+Combination reads existing JSON reports without collecting tests, importing user projects,
+running fixtures or executing tests. It retains the original observations so consumers can
+trace the conclusion back to each run. Domain measurements, logs, timestamps, hardware
+identity and decisions about whether runs are comparable remain user responsibilities.
+Matching requirement IDs and node IDs does not establish matching code or environments.
+
+Combination accepts reports from individual pytest invocations. Combining an
+already combined report, replacing an earlier run, choosing a latest result, generating
+run IDs automatically and importing external execution metadata are outside this contract.
+
+### Commands and run identity
+
+Reports from complementary selections can be combined:
+
+```sh
+uv run --locked pytest tests/test_behavior.py -k first_behavior \
+    --xspec-run-id=run-a --xspec-json=report-a.json
+uv run --locked pytest tests/test_behavior.py -k second_behavior \
+    --xspec-run-id=run-b --xspec-json=report-b.json
+uv run --locked python -m pytest_xspec combine report-a.json report-b.json \
+    --output=combined.json --xspec-strict
+```
+
+The paths refer to tests in the user's project. Both tests support `REQ-001`, following
+the existing marker convention:
+
+```python
+@pytest.mark.xspec("REQ-001")
+def test_first_behavior() -> None:
+    observed = perform_first_behavior()
+
+    assert observed == expected_first_result
+```
+
+`--xspec-run-id=ID` labels one pytest invocation. The ID is a nonempty, non-whitespace-only
+string, retained exactly as supplied. Invalid IDs produce a pytest usage error before
+fixtures or tests execute. Run identity does not change selection, outcomes or strict mode.
+An xdist invocation has one controller-owned run ID, not an ID per worker or retry attempt.
+Without this option, existing report output remains unchanged.
+
+A labeled single-run JSON report adds `"run_id": "run-a"` at the top level.
+Its requirements, test records, summary and optional scope retain their existing structure.
+Empty inventories and missing requirements still retain the top-level run ID.
+
+### Input and output contract
+
+The combine command accepts one or more input paths and requires `--output=PATH`.
+Each input must be a labeled single-run report. Unlabeled reports are rejected with a
+diagnostic explaining that `--xspec-run-id` is required when producing the report.
+Run IDs must be unique across inputs, including when the same file is supplied twice.
+This prevents ambiguous observations and duplicate counting of execution failures.
+
+The combined report contains a top-level `runs` array of single-run report objects.
+Each object retains its `run_id`, `requirements`, `summary` and optional `scope`.
+Test observations remain under their run's requirements as
+`{"nodeid": "test_behavior.py::test_first_behavior", "outcome": "PASSED"}`.
+The containing run identifies each observation, so test records do not repeat `run_id`.
+Equal node IDs from different runs remain separate observations. A shared test remains
+listed under each associated requirement. Within one requirement and run, duplicate
+node IDs are invalid. Parameterized node IDs remain intact.
+
+Top-level `requirements` contains the combined conclusion for each requirement as
+`{"status": "PASSED"}`, without a duplicated test list. Top-level `summary` contains
+the combined counts, coverage, verdict, collection errors and optional interruption flag.
+Original requirement statuses and summaries remain unchanged inside their runs.
+
+The top-level `runs` list follows input argument order. Each run preserves its inventory
+order and each requirement's test order. Reversing input order may change
+presentation order, but must not change requirement statuses, coverage or the verdict.
+Every input must declare the same set of requirement IDs, regardless of their order.
+Different inventories are rejected rather than merged. The output preserves the first
+input's inventory order. Different test selections are allowed.
+
+Selection scopes describe individual runs. Preserve each supplied `scope` inside its
+run object and omit it for runs without scope information. A combined report has no
+top-level `scope`, because it does not represent a single pytest selection.
+
+This feature preserves scopes already present in input reports. The `-k` and `-m` filters
+work without `--xspec-select`, but their use alone does not currently produce scope
+metadata. An absent scope means the selection context was not recorded, not that every
+test ran. Expanding scope recording is outside this feature.
+
+Unreadable files, malformed JSON, missing required fields, wrong field types, unknown
+outcomes and invalid run IDs are rejected with a diagnostic identifying the
+input and problem. Input requirement statuses and summary values must be consistent with
+their observations under the single-run rules. They are not trusted as combined results.
+`MISSING` is a requirement status, never a test outcome.
+
+Inputs are never modified. The output must not refer to an input file. Invalid input must
+not create an output report or replace an existing output. Output write failures produce
+a diagnostic naming the destination, without reporting successful combination.
+
+### Combined verification
+
+Verification uses observations grouped by requirement ID and complete test node ID.
+It does not aggregate the input requirement statuses or average their coverage values.
+The complementary-run example must yield `PASSED`, 100.0% coverage and a true verdict,
+while retaining all four observations, including both `DESELECTED` records.
+
+A test deselected in every input remains `DESELECTED`. A requirement with no associated
+test in any input remains `MISSING`. Tests outside all collected paths are not invented.
+Full collection remains necessary to establish all relevant associations.
+
+For the same test, disregard `DESELECTED` when another observation has a different
+outcome, then apply the existing outcome precedence to the remaining observations.
+A pass cannot erase a failure, error, skip, expected failure or unexpected pass from
+another run. Separate invocations are not retry attempts. All original observations,
+including disregarded deselections, remain in the output.
+
+After resolving each test's observations, requirement aggregation uses the existing outcome precedence.
+An unsuccessful distinct test cannot be hidden by a successful test for the same requirement.
+
+Combined coverage uses the existing requirement-count formula. Collection-error counts
+are summed across the distinct runs. If any input is interrupted, the combined summary
+includes `interrupted: true`. Either condition prevents a true verdict even at 100%
+coverage. Zero requirements retain 0.0% coverage and the existing verdict rules.
+
+The command prints requirement statuses and a verification summary consistent with its
+JSON. Associated test counts count distinct node IDs per requirement, not observations.
+It exits 0 after a successful write without `--xspec-strict`, even if verification is false.
+With `--xspec-strict`, it writes the report and exits 1 for a false verdict or 0 for a true one.
+Usage, input and output errors exit 2. These are standalone command exit codes, not a
+reconstruction of the original pytest exit codes. `--help` exits 0 without reading inputs.
+
+### Acceptance criteria and verification approach
+
+The [run identity](../tests/acceptance/test_run_identity.py),
+[combination](../tests/acceptance/test_combine_reports.py) and
+[input validation](../tests/acceptance/test_combine_validation.py) acceptance tests use
+real pytest subprocesses in isolated projects to generate reports, then invoke the
+installed module command in a separate process. Successful inputs come from actual runs.
+Deliberately malformed inputs exercise validation. Expected identities, outcomes and
+verdicts are explicit, independent of implementation.
+
+- A labeled single-run report adds its ID at the top level and preserves its requirements,
+  test observations, summary and optional scope without adding IDs to individual tests.
+- An unlabeled run preserves the existing JSON contract. Invalid run IDs fail before
+  execution, paired with a valid-ID scenario proving execution is observable.
+- Complementary filtered runs verify their shared requirement and retain every original
+  observation under its run. Both input orders produce the same verdict. Combined
+  requirement conclusions do not duplicate the runs' test lists, statuses or summaries.
+- All-deselected tests and requirements missing from every run remain unverified.
+- Conflicting outcomes preserve adverse outcomes in both input orders, and a distinct
+  unsuccessful test cannot be hidden by another test's pass.
+- Different inventory ID sets are rejected, while different ID orders are accepted. Empty inventories,
+  parameterized identities and shared requirement associations are preserved.
+- Collection failures and interruptions survive combination and prevent verification,
+  including when all associated tests pass or the inventory is empty.
+- JSON, terminal feedback and strict-mode exit codes agree. A false strict verdict still
+  produces the requested report.
+- Missing files, invalid report contents, repeated run IDs and output/input collisions
+  produce actionable diagnostics and preserve existing input and output files.
+- Combining reports succeeds without access to the original test project and does not
+  execute test bodies. Run-specific selection scopes remain attributable to their runs.
+
+Tests belong in `tests/acceptance/`, with named Python scenarios and existing project
+fixtures. Focused validation tests belong in `tests/unit/`. The entry point belongs
+in `src/pytest_xspec/`.
+Contributor commands, Python style and development boundaries remain owned by
+[CONTRIBUTING.md](../CONTRIBUTING.md) and the repository instructions. The existing
+[combine-reports example](../examples/combine_reports/) is the motivating workflow.
+
 ## Executable acceptance criteria
 
 The following tests verify this contract through real pytest runs in isolated projects.
@@ -339,3 +512,6 @@ Contributor commands are maintained in [CONTRIBUTING.md](../CONTRIBUTING.md#chec
 | [Reporting](../tests/acceptance/test_reporting.py) | Terminal feedback, JSON records, requirement coverage and verdicts. |
 | [Parallel execution](../tests/acceptance/test_parallel.py) | Real load and worksteal workers, exact identities, outcome precedence, filtering, early stops, crashes and controller-only reporting. |
 | [Retries](../tests/acceptance/test_rerunfailures.py) | Final-attempt outcomes, interruption safety, shared-requirement failure preservation and independent worker results. |
+| [Run identity](../tests/acceptance/test_run_identity.py) | Opaque run IDs, invalid labels, unchanged unlabeled reports, retries and distributed execution. |
+| [Report combination](../tests/acceptance/test_combine_reports.py) | Nested run preservation, complementary selections, adverse outcomes, scope, inventory order and combined verdicts. |
+| [Combination validation](../tests/acceptance/test_combine_validation.py) | Input diagnostics, duplicate identities, inventory conflicts, output protection and command usage. |

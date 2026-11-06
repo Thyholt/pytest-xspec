@@ -13,6 +13,7 @@ from pytest_xspec.outcomes import phase_outcome
 from pytest_xspec.reporting import (
     ExecutionStatus,
     Report,
+    ReportMetadata,
     SelectionScope,
     build_report,
     write_json,
@@ -26,6 +27,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption("--xspec-report", action="store_true", help="Print requirement verification")
     group.addoption("--xspec-strict", action="store_true", help="Fail on unverified requirements")
     group.addoption("--xspec-json", metavar="PATH", help="Write requirement verification as JSON")
+    group.addoption("--xspec-run-id", metavar="ID", help="Label this invocation in JSON reports")
     group.addoption(
         "--xspec-select",
         action="append",
@@ -44,9 +46,38 @@ def pytest_configure(config: pytest.Config) -> None:
     config.pluginmanager.register(plugin.workers, "xspec-workers")
 
 
+def _run_id(config: pytest.Config) -> str | None:
+    run_id = config.getoption("xspec_run_id")
+    if run_id is None:
+        return None
+
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise pytest.UsageError("--xspec-run-id must not be empty or whitespace-only")
+
+    return run_id
+
+
+def _selection_scope(config: pytest.Config, selected: list[str]) -> SelectionScope | None:
+    if not selected:
+        return None
+
+    return {
+        "selected_requirements": selected,
+        "collection_paths": (
+            ["."]
+            if config.args_source is pytest.Config.ArgsSource.INVOCATION_DIR
+            else list(config.args)
+        ),
+        "keyword_expression": config.getoption("keyword"),
+        "marker_expression": config.getoption("markexpr"),
+        "collect_only": config.getoption("collectonly"),
+    }
+
+
 class RequirementPlugin:
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
+        self.run_id = _run_id(config)
         self.requirements: dict[str, list[str]] = {
             identifier: [] for identifier in load_requirements(config)
         }
@@ -57,19 +88,7 @@ class RequirementPlugin:
             if identifier not in self.requirements:
                 raise pytest.UsageError(f"Unknown selected xspec requirement ID {identifier!r}")
 
-        self.scope: SelectionScope | None = None
-        if self.selected_requirements:
-            self.scope = {
-                "selected_requirements": self.selected_requirements,
-                "collection_paths": (
-                    ["."]
-                    if config.args_source is pytest.Config.ArgsSource.INVOCATION_DIR
-                    else list(config.args)
-                ),
-                "keyword_expression": config.getoption("keyword"),
-                "marker_expression": config.getoption("markexpr"),
-                "collect_only": config.getoption("collectonly"),
-            }
+        self.scope = _selection_scope(config, self.selected_requirements)
 
         self.results = ExecutionResults()
         self.execution = ExecutionStatus()
@@ -164,11 +183,18 @@ class RequirementPlugin:
         self.interrupt()
 
     def report(self) -> Report:
+        metadata: ReportMetadata = {}
+        if self.scope is not None:
+            metadata["scope"] = self.scope
+
+        if self.run_id is not None:
+            metadata["run_id"] = self.run_id
+
         return build_report(
             self.requirements,
             self.results.outcomes(),
             self.execution,
-            scope=self.scope,
+            metadata=metadata,
         )
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:

@@ -1,6 +1,7 @@
 """Run the example projects and check that their advertised behavior stays true."""
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from shutil import copytree, ignore_patterns
@@ -10,6 +11,7 @@ import pytest
 
 from examples import (
     acceptance_only,
+    combine_reports,
     missing_requirement,
     partial_verification,
     quickstart,
@@ -33,7 +35,14 @@ def example_project(
             example_path,
             pytester.path,
             dirs_exist_ok=True,
-            ignore=ignore_patterns("__pycache__", ".pytest_cache", "report.json"),
+            ignore=ignore_patterns(
+                "__pycache__",
+                ".pytest_cache",
+                "report.json",
+                "report-a.json",
+                "report-b.json",
+                "combined.json",
+            ),
         )
         return pytester
 
@@ -193,3 +202,34 @@ def test_plain_pytest_in_acceptance_only_still_fails_the_moon_test(
     }
     assert report["summary"]["verified"] is True
     result.stdout.fnmatch_lines(["*test_moon_is_made_of_cheese*", "*REQ-001*PASSED*"])
+
+
+def test_complementary_bench_runs_verify_the_requirement_together(
+    example_project: Callable[[ModuleType], pytest.Pytester],
+) -> None:
+    project = example_project(combine_reports)
+    first = project.runpytest_subprocess(
+        "-k", "delivery_volume", "--xspec-run-id=run-a", "--xspec-json=report-a.json"
+    )
+    second = project.runpytest_subprocess(
+        "-k", "occlusion_alarm", "--xspec-run-id=run-b", "--xspec-json=report-b.json"
+    )
+    assert first.ret == second.ret == pytest.ExitCode.OK
+
+    result = project.run(
+        sys.executable,
+        "-m",
+        "pytest_xspec",
+        "combine",
+        "report-a.json",
+        "report-b.json",
+        "--output=combined.json",
+        "--xspec-strict",
+    )
+
+    assert result.ret == pytest.ExitCode.OK
+    report = json.loads((project.path / "combined.json").read_text(encoding="utf-8"))
+    assert report == json.loads(
+        (Path(combine_reports.__path__[0]) / "combined.json").read_text(encoding="utf-8")
+    )
+    result.stdout.fnmatch_lines(["*REQ-001*PASSED*2*", "*Coverage:*100.0%*"])

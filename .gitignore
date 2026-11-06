@@ -230,3 +230,6 @@ __marimo__/
 !/.agents/skills/
 /.agents/skills/*
 !/.agents/skills/addyosmani/
+.agents/skills/adewale/
+.agents/skills/rollinsio/
+.agents/skills/andhen/

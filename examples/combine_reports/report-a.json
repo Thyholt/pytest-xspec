@@ -1,0 +1,26 @@
+{
+  "requirements": {
+    "REQ-001": {
+      "status": "DESELECTED",
+      "tests": [
+        {
+          "nodeid": "test_behavior.py::test_delivery_volume",
+          "outcome": "PASSED"
+        },
+        {
+          "nodeid": "test_behavior.py::test_occlusion_alarm",
+          "outcome": "DESELECTED"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "requirements": 1,
+    "passed": 0,
+    "unverified": 1,
+    "coverage": 0.0,
+    "verified": false,
+    "collection_errors": 0
+  },
+  "run_id": "run-a"
+}
